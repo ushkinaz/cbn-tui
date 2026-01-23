@@ -30,11 +30,22 @@ struct Args {
     /// Force download of game data even if cached
     #[arg(long)]
     force: bool,
+
+    /// List all available game versions
+    #[arg(long)]
+    game_versions: bool,
 }
 
 #[derive(Debug, Deserialize)]
 struct Root {
     data: Vec<Value>,
+}
+    
+#[derive(Debug, Deserialize)]
+struct GameBuild {
+    build_number: String,
+    prerelease: bool,
+    created_at: String,
 }
 
 #[derive(Clone)]
@@ -379,6 +390,50 @@ impl Model {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    if args.game_versions {
+        let project_dirs = directories::ProjectDirs::from("com", "cataclysmbn", "cbn-tui")
+            .ok_or_else(|| anyhow::anyhow!("Could not determine cache directory"))?;
+        let cache_dir = project_dirs.cache_dir();
+        fs::create_dir_all(cache_dir)?;
+        let builds_path = cache_dir.join("builds.json");
+
+        let mut should_download = args.force || !builds_path.exists();
+        if !should_download {
+            if let Ok(metadata) = fs::metadata(&builds_path) {
+                if let Ok(modified) = metadata.modified() {
+                    if let Ok(elapsed) = modified.elapsed() {
+                        if elapsed.as_secs() > 3600 {
+                            should_download = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        let content = if should_download {
+            let url = "https://data.cataclysmbn-guide.com/builds.json";
+            let response = reqwest::blocking::get(url)?;
+            if !response.status().is_success() {
+                anyhow::bail!("Failed to download builds list: {}", response.status());
+            }
+            let bytes = response.bytes()?;
+            fs::write(&builds_path, &bytes)?;
+            String::from_utf8(bytes.to_vec())?
+        } else {
+            fs::read_to_string(&builds_path)?
+        };
+
+        let mut builds: Vec<GameBuild> = serde_json::from_str(&content)?;
+        // List in order of creation (newest first)
+        builds.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        for build in builds {
+            let type_ = if build.prerelease { "Nightly" } else { "Stable" };
+            println!("{} ({})", build.build_number, type_);
+        }
+        return Ok(());
+    }
 
     let file_path = if let Some(game_version) = args.game {
         let project_dirs = directories::ProjectDirs::from("com", "cataclysmbn", "cbn-tui")
