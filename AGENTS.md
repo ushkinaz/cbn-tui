@@ -2,8 +2,8 @@
 
 Purpose
 - Terminal UI browser for Cataclysm:BN JSON data.
-- Default dataset from this crate is `../_test/all.json` (relative to `tui/`).
-- Schema reference lives in `../src/types.ts` (TypeScript typings).
+- Default dataset from this crate is `data/all.json` (relative to `tui/`).
+- Schema reference lives in `reference/types.ts` (TypeScript typings).
 
 Repository Layout
 - `Cargo.toml`: crate metadata and dependencies.
@@ -12,7 +12,7 @@ Repository Layout
 
 Build, Run, Lint, Test
 - Build: `cargo build`
-- Run: `cargo run -- --file ../_test/all.json`
+- Run: `cargo run -- --file data/all.json`
 - Run with default file: `cargo run`
 - Test: `cargo test`
 - Single test: `cargo test <test_name>`
@@ -21,17 +21,17 @@ Build, Run, Lint, Test
 - Lint (if needed): `cargo clippy --all-targets --all-features`
 
 Large JSON Workflow
-- Truth: `../_test/all.json` is the compiled data blob.
+- Truth: `data/all.json` is the compiled data blob.
 - Large file handling: ~30MB, never read the whole file; use `jq`.
 - Primary fields: `id`, `abstract`, `type`, `category`.
 - Filter specific item
-  - `jq '.data[] | select(.id=="<id>" and .type=="<type>")' ../_test/all.json`
+  - `jq '.data[] | select(.id=="<id>" and .type=="<type>")' data/all.json`
 - List all IDs of a type
-  - `jq '.data[] | select(.type=="item") | .id' -r ../_test/all.json`
+  - `jq '.data[] | select(.type=="item") | .id' -r data/all.json`
 - Find items with specific property
-  - `jq '.data[] | select(.color == "RED")' ../_test/all.json`
+  - `jq '.data[] | select(.color == "RED")' data/all.json`
 - Show types with counts
-  - `jq -r '.data[] | .type' ../_test/all.json | sort | uniq -c | sort -nr`
+  - `jq -r '.data[] | .type' data/all.json | sort | uniq -c | sort -nr`
 - Inheritance: raw JSON uses `copy-from`; check the parent when fields are missing.
 - Resolution: use `../src/data.ts` (`CBNData` / `_flatten`) for resolved values.
 
