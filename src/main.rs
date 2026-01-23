@@ -12,12 +12,13 @@ use ratatui::{
 use serde::Deserialize;
 use serde_json::Value;
 use std::{fs, io, time::Duration};
+use tui_input::{backend::crossterm::EventHandler, Input};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Path to the all.json file
-    #[arg(short, long, default_value = "../_test/all.json")]
+    #[arg(short, long, default_value = "data/all.json")]
     file: String,
 }
 
@@ -76,13 +77,34 @@ impl CbnItem {
         if query.is_empty() {
             return true;
         }
-        
-        // Simple case-insensitive contains check across keys
-        let q = query.to_lowercase();
-        self.id.to_lowercase().contains(&q) ||
-        self.type_.to_lowercase().contains(&q) ||
-        self.abstract_.to_lowercase().contains(&q) ||
-        self.category.to_lowercase().contains(&q)
+
+        for part in query.split_whitespace() {
+            let part_lower = part.to_lowercase();
+            
+            let match_found = if let Some(val) = part_lower.strip_prefix("id:") {
+                 self.id.to_lowercase().contains(val)
+            } else if let Some(val) = part_lower.strip_prefix("i:") {
+                 self.id.to_lowercase().contains(val)
+            } else if let Some(val) = part_lower.strip_prefix("type:") {
+                 self.type_.to_lowercase().contains(val)
+             } else if let Some(val) = part_lower.strip_prefix("t:") {
+                 self.type_.to_lowercase().contains(val)
+            } else if let Some(val) = part_lower.strip_prefix("category:") {
+                 self.category.to_lowercase().contains(val)
+             } else if let Some(val) = part_lower.strip_prefix("c:") {
+                 self.category.to_lowercase().contains(val)
+            } else {
+                 self.id.to_lowercase().contains(&part_lower) ||
+                 self.type_.to_lowercase().contains(&part_lower) ||
+                 self.abstract_.to_lowercase().contains(&part_lower) ||
+                 self.category.to_lowercase().contains(&part_lower)
+            };
+
+            if !match_found {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -95,7 +117,7 @@ struct App {
     items: Vec<CbnItem>,
     filtered_items: Vec<usize>, // Indices into self.items
     list_state: ListState,
-    input: String,
+    input: Input,
     input_mode: InputMode,
     should_quit: bool,
 }
@@ -111,7 +133,7 @@ impl App {
             items,
             filtered_items: indices,
             list_state: state,
-            input: String::new(),
+            input: Input::default(),
             input_mode: InputMode::Normal,
             should_quit: false,
         }
@@ -121,7 +143,7 @@ impl App {
         self.filtered_items = self.items
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.matches(&self.input))
+            .filter(|(_, item)| item.matches(self.input.value()))
             .map(|(i, _)| i)
             .collect();
         
@@ -231,15 +253,10 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                         KeyCode::Esc => {
                             app.input_mode = InputMode::Normal;
                         }
-                        KeyCode::Char(c) => {
-                            app.input.push(c);
+                        _ => {
+                            app.input.handle_event(&Event::Key(key));
                             app.update_filter();
                         }
-                        KeyCode::Backspace => {
-                            app.input.pop();
-                            app.update_filter();
-                        }
-                        _ => {}
                     },
                 }
             }
@@ -314,11 +331,71 @@ fn ui(f: &mut Frame, app: &mut App) {
         InputMode::Editing => "Filter (Editing...)",
     };
     
-    let input = Paragraph::new(app.input.as_str())
+    let width = chunks[1].width.max(3) - 3; // keep 2 for borders and 1 for cursor
+    let scroll = app.input.visual_scroll(width as usize);
+    let input = Paragraph::new(app.input.value())
         .style(match app.input_mode {
             InputMode::Normal => Style::default(),
             InputMode::Editing => Style::default().fg(Color::Yellow),
         })
+        .scroll((0, scroll as u16))
         .block(Block::default().borders(Borders::ALL).title(input_block_title));
     f.render_widget(input, chunks[1]);
+    match app.input_mode {
+        InputMode::Normal =>
+            // Hide the cursor. `Frame` does this by default, so we don't need to do anything here
+            {},
+
+        InputMode::Editing => {
+            // Make the cursor visible and ask ratatui to put it at the specified coordinates after
+            // rendering
+            f.set_cursor_position((
+                // Draft the area of the block
+                chunks[1].x + ((app.input.visual_cursor().max(scroll) - scroll) as u16) + 1,
+                chunks[1].y + 1,
+            ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_matches() {
+        let item = CbnItem::from_json(json!({
+            "id": "test_id",
+            "type": "MONSTER",
+            "category": "creatures",
+            "name": "Test Name"
+        }));
+
+        // Generic search
+        assert!(item.matches("test"));
+        assert!(item.matches("monster"));
+        assert!(item.matches("creatures"));
+        assert!(!item.matches("food"));
+
+        // ID search
+        assert!(item.matches("id:test_id"));
+        assert!(item.matches("i:test"));
+        assert!(!item.matches("id:monster"));
+
+        // Type search
+        assert!(item.matches("type:MONSTER"));
+        assert!(item.matches("t:monster"));
+        assert!(!item.matches("t:test"));
+
+        // Category search
+        assert!(item.matches("category:creatures"));
+        assert!(item.matches("c:creatures"));
+        assert!(!item.matches("c:monster"));
+
+        // Combined search (AND logic)
+        assert!(item.matches("t:monster c:creatures"));
+        assert!(item.matches("i:test t:monster"));
+        assert!(!item.matches("i:test t:item"));
+    }
 }

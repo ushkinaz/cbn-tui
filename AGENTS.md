@@ -65,6 +65,7 @@ Data and JSON Handling
 UI and Interaction Conventions
 - Keyboard flow: `q` quits, `/` enters filter input.
 - Up/down or `j`/`k` move selection.
+- Use the `ratatui` library for all UI components and layout.
 - Keep highlight style consistent with ratatui defaults.
 - Layout uses vertical split with list/details and filter input.
 
