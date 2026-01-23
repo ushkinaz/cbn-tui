@@ -23,7 +23,7 @@ struct Args {
     #[arg(short, long)]
     file: Option<String>,
 
-    /// Game version to download (e.g. v0.9.1)
+    /// Game version to download (e.g. v0.9.1, stable, nightly)
     #[arg(short, long)]
     game: Option<String>,
 
@@ -443,7 +443,28 @@ fn main() -> Result<()> {
 
         let target_path = version_cache_dir.join("all.json");
 
-        if args.force || !target_path.exists() {
+        let mut should_download = args.force || !target_path.exists();
+        if !should_download {
+            let expiration = match game_version.as_str() {
+                "nightly" => Some(Duration::from_secs(12 * 3600)),
+                "stable" => Some(Duration::from_secs(30 * 24 * 3600)),
+                _ => None,
+            };
+
+            if let Some(exp) = expiration {
+                if let Ok(metadata) = fs::metadata(&target_path) {
+                    if let Ok(modified) = metadata.modified() {
+                        if let Ok(elapsed) = modified.elapsed() {
+                            if elapsed > exp {
+                                should_download = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if should_download {
             let url = format!(
                 "https://data.cataclysmbn-guide.com/data/{}/all.json",
                 game_version
