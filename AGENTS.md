@@ -41,12 +41,13 @@ Cataclysm:BN JSON Structure
 - Some fields can be arrays or objects based on type.
 
 Coding Style (Rust)
+- Follow The Elm Architecture per ratatui: `Model`, `Message`, `update`, `view`, `handle_event`, and `run` naming.
 - Formatting: rely on rustfmt; keep default style.
 - Imports grouped by crate, multi-line use blocks are preferred.
 - Use `snake_case` for functions/fields and `PascalCase` for types.
 - Reserved words use suffixes: `type_`, `abstract_`.
 - Prefer small helper methods for logic (see `CbnItem::from_json`).
-- Keep UI layout in `ui` and input loop in `run_app`.
+- Keep UI layout in `view` and input loop in `run`.
 - Keep data parsing in `main` or dedicated helpers.
 
 Error Handling

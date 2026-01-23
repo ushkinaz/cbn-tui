@@ -40,18 +40,38 @@ struct CbnItem {
 
 impl CbnItem {
     fn from_json(v: Value) -> Self {
-        let id = v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let abstract_ = v.get("abstract").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let name = v.get("name").and_then(|v| {
-            if v.is_object() {
-                v.get("str").and_then(|s| s.as_str())
-            } else {
-                v.as_str()
-            }
-        }).unwrap_or("").to_string();
-        
-        let type_ = v.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let category = v.get("category").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let id = v
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let abstract_ = v
+            .get("abstract")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let name = v
+            .get("name")
+            .and_then(|v| {
+                if v.is_object() {
+                    v.get("str").and_then(|s| s.as_str())
+                } else {
+                    v.as_str()
+                }
+            })
+            .unwrap_or("")
+            .to_string();
+
+        let type_ = v
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let category = v
+            .get("category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let display_name = if !id.is_empty() {
             id.clone()
@@ -80,24 +100,24 @@ impl CbnItem {
 
         for part in query.split_whitespace() {
             let part_lower = part.to_lowercase();
-            
+
             let match_found = if let Some(val) = part_lower.strip_prefix("id:") {
-                 self.id.to_lowercase().contains(val)
+                self.id.to_lowercase().contains(val)
             } else if let Some(val) = part_lower.strip_prefix("i:") {
-                 self.id.to_lowercase().contains(val)
+                self.id.to_lowercase().contains(val)
             } else if let Some(val) = part_lower.strip_prefix("type:") {
-                 self.type_.to_lowercase().contains(val)
-             } else if let Some(val) = part_lower.strip_prefix("t:") {
-                 self.type_.to_lowercase().contains(val)
+                self.type_.to_lowercase().contains(val)
+            } else if let Some(val) = part_lower.strip_prefix("t:") {
+                self.type_.to_lowercase().contains(val)
             } else if let Some(val) = part_lower.strip_prefix("category:") {
-                 self.category.to_lowercase().contains(val)
-             } else if let Some(val) = part_lower.strip_prefix("c:") {
-                 self.category.to_lowercase().contains(val)
+                self.category.to_lowercase().contains(val)
+            } else if let Some(val) = part_lower.strip_prefix("c:") {
+                self.category.to_lowercase().contains(val)
             } else {
-                 self.id.to_lowercase().contains(&part_lower) ||
-                 self.type_.to_lowercase().contains(&part_lower) ||
-                 self.abstract_.to_lowercase().contains(&part_lower) ||
-                 self.category.to_lowercase().contains(&part_lower)
+                self.id.to_lowercase().contains(&part_lower)
+                    || self.type_.to_lowercase().contains(&part_lower)
+                    || self.abstract_.to_lowercase().contains(&part_lower)
+                    || self.category.to_lowercase().contains(&part_lower)
             };
 
             if !match_found {
@@ -113,7 +133,16 @@ enum InputMode {
     Editing,
 }
 
-struct App {
+enum Message {
+    Quit,
+    EnterEdit,
+    ExitEdit,
+    MoveNext,
+    MovePrevious,
+    Input(Event),
+}
+
+struct Model {
     items: Vec<CbnItem>,
     filtered_items: Vec<usize>, // Indices into self.items
     list_state: ListState,
@@ -122,7 +151,7 @@ struct App {
     should_quit: bool,
 }
 
-impl App {
+impl Model {
     fn new(items: Vec<CbnItem>) -> Self {
         let indices: Vec<usize> = (0..items.len()).collect();
         let mut state = ListState::default();
@@ -140,13 +169,14 @@ impl App {
     }
 
     fn update_filter(&mut self) {
-        self.filtered_items = self.items
+        self.filtered_items = self
+            .items
             .iter()
             .enumerate()
             .filter(|(_, item)| item.matches(self.input.value()))
             .map(|(i, _)| i)
             .collect();
-        
+
         // Reset selection
         if self.filtered_items.is_empty() {
             self.list_state.select(None);
@@ -155,7 +185,19 @@ impl App {
         }
     }
 
-
+    fn update(&mut self, msg: Message) {
+        match msg {
+            Message::Quit => self.should_quit = true,
+            Message::EnterEdit => self.input_mode = InputMode::Editing,
+            Message::ExitEdit => self.input_mode = InputMode::Normal,
+            Message::MoveNext => self.select_next(),
+            Message::MovePrevious => self.select_previous(),
+            Message::Input(event) => {
+                self.input.handle_event(&event);
+                self.update_filter();
+            }
+        }
+    }
 
     fn select_next(&mut self) {
         if self.filtered_items.is_empty() {
@@ -175,7 +217,7 @@ impl App {
     }
 
     fn select_previous(&mut self) {
-         if self.filtered_items.is_empty() {
+        if self.filtered_items.is_empty() {
             return;
         }
         let i = match self.list_state.selected() {
@@ -200,7 +242,7 @@ fn main() -> Result<()> {
     let content = fs::read_to_string(&args.file)?;
     let root: Root = serde_json::from_str(&content)?;
     let items: Vec<CbnItem> = root.data.into_iter().map(CbnItem::from_json).collect();
-    
+
     // 2. Setup Terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -209,15 +251,12 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // 3. Run Loop
-    let mut app = App::new(items);
-    let res = run_app(&mut terminal, &mut app);
+    let mut model = Model::new(items);
+    let res = run(&mut terminal, &mut model);
 
     // 4. Teardown
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     if let Err(err) = res {
@@ -227,69 +266,63 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+fn run<B: Backend>(terminal: &mut Terminal<B>, model: &mut Model) -> io::Result<()> {
     loop {
-        terminal.draw(|f| ui(f, app))?;
+        terminal.draw(|f| view(f, model))?;
 
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                match app.input_mode {
-                    InputMode::Normal => match key.code {
-                        KeyCode::Char('q') => app.should_quit = true,
-                        KeyCode::Char('/') => {
-                            app.input_mode = InputMode::Editing;
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => app.select_next(),
-                        KeyCode::Up | KeyCode::Char('k') => app.select_previous(),
-                        _ => {}
-                    },
-                    InputMode::Editing => match key.code {
-                        KeyCode::Enter => {
-                            app.input_mode = InputMode::Normal;
-                        }
-                        KeyCode::Esc => {
-                            app.input_mode = InputMode::Normal;
-                        }
-                        _ => {
-                            app.input.handle_event(&Event::Key(key));
-                            app.update_filter();
-                        }
-                    },
+                if let Some(msg) = handle_event(&model.input_mode, key) {
+                    model.update(msg);
                 }
             }
         }
 
-        if app.should_quit {
+        if model.should_quit {
             return Ok(());
         }
     }
 }
 
-fn ui(f: &mut Frame, app: &mut App) {
+fn handle_event(input_mode: &InputMode, key: event::KeyEvent) -> Option<Message> {
+    match input_mode {
+        InputMode::Normal => match key.code {
+            KeyCode::Char('q') => Some(Message::Quit),
+            KeyCode::Char('/') => Some(Message::EnterEdit),
+            KeyCode::Down | KeyCode::Char('j') => Some(Message::MoveNext),
+            KeyCode::Up | KeyCode::Char('k') => Some(Message::MovePrevious),
+            _ => None,
+        },
+        InputMode::Editing => match key.code {
+            KeyCode::Enter | KeyCode::Esc => Some(Message::ExitEdit),
+            _ => Some(Message::Input(Event::Key(key))),
+        },
+    }
+}
+
+fn view(f: &mut Frame, model: &mut Model) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3), // Main View
+            Constraint::Min(3),    // Main View
             Constraint::Length(3), // Filter Input
         ])
         .split(f.area());
 
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(30),
-            Constraint::Percentage(70),
-        ])
+        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(chunks[0]);
 
     // render list
-    let list_items: Vec<ListItem> = app.filtered_items
+    let list_items: Vec<ListItem> = model
+        .filtered_items
         .iter()
         .map(|&idx| {
-            let item = &app.items[idx];
+            let item = &model.items[idx];
             // Format: [TYPE] DisplayName
             let content = format!("[{}] {}", item.type_, item.display_name);
             ListItem::new(content)
@@ -301,13 +334,13 @@ fn ui(f: &mut Frame, app: &mut App) {
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
 
-    f.render_stateful_widget(list, main_chunks[0], &mut app.list_state);
+    f.render_stateful_widget(list, main_chunks[0], &mut model.list_state);
 
     // render details
-    let details_text = if let Some(idx) = app.list_state.selected() {
-        if idx < app.filtered_items.len() {
-            let real_idx = app.filtered_items[idx];
-            let item = &app.items[real_idx];
+    let details_text = if let Some(idx) = model.list_state.selected() {
+        if idx < model.filtered_items.len() {
+            let real_idx = model.filtered_items[idx];
+            let item = &model.items[real_idx];
             match serde_json::to_string_pretty(&item.original_json) {
                 Ok(s) => s,
                 Err(_) => "Error parsing JSON".to_string(),
@@ -322,36 +355,40 @@ fn ui(f: &mut Frame, app: &mut App) {
     let paragraph = Paragraph::new(details_text)
         .block(Block::default().borders(Borders::ALL).title("Details"))
         .wrap(Wrap { trim: false });
-    
+
     f.render_widget(paragraph, main_chunks[1]);
 
     // render input
-    let input_block_title = match app.input_mode {
+    let input_block_title = match model.input_mode {
         InputMode::Normal => "Filter (Press '/' to edit, Enter/Esc to stop)",
         InputMode::Editing => "Filter (Editing...)",
     };
-    
+
     let width = chunks[1].width.max(3) - 3; // keep 2 for borders and 1 for cursor
-    let scroll = app.input.visual_scroll(width as usize);
-    let input = Paragraph::new(app.input.value())
-        .style(match app.input_mode {
+    let scroll = model.input.visual_scroll(width as usize);
+    let input = Paragraph::new(model.input.value())
+        .style(match model.input_mode {
             InputMode::Normal => Style::default(),
             InputMode::Editing => Style::default().fg(Color::Yellow),
         })
         .scroll((0, scroll as u16))
-        .block(Block::default().borders(Borders::ALL).title(input_block_title));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(input_block_title),
+        );
     f.render_widget(input, chunks[1]);
-    match app.input_mode {
+    match model.input_mode {
         InputMode::Normal =>
             // Hide the cursor. `Frame` does this by default, so we don't need to do anything here
-            {},
+            {}
 
         InputMode::Editing => {
             // Make the cursor visible and ask ratatui to put it at the specified coordinates after
             // rendering
             f.set_cursor_position((
                 // Draft the area of the block
-                chunks[1].x + ((app.input.visual_cursor().max(scroll) - scroll) as u16) + 1,
+                chunks[1].x + ((model.input.visual_cursor().max(scroll) - scroll) as u16) + 1,
                 chunks[1].y + 1,
             ))
         }
