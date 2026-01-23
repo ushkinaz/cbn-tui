@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: cbn-tui-linux-x86_64
+          - os: windows-latest
+            asset_name: cbn-tui-windows-x86_64.exe
+          - os: macos-latest
+            asset_name: cbn-tui-macos-universal
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build (non-macOS)
+        if: matrix.os != 'macos-latest'
+        run: cargo build --release
+
+      - name: Build (macOS Universal)
+        if: matrix.os == 'macos-latest'
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          lipo -create -output target/release/cbn-tui target/x86_64-apple-darwin/release/cbn-tui target/aarch64-apple-darwin/release/cbn-tui
+
+      - name: Prepare binary
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp target/release/cbn-tui.exe ${{ matrix.asset_name }}
+          else
+            cp target/release/cbn-tui ${{ matrix.asset_name }}
+          fi
+
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset_name }}
+          generate_release_notes: true
+          # Note: softprops/action-gh-release handles parallel uploads to the same release
