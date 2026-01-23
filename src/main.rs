@@ -213,6 +213,26 @@ impl Model {
         }
     }
 
+    fn update_layout(&mut self, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(3),    // Main View
+                Constraint::Length(3), // Filter Input
+            ])
+            .split(area);
+
+        self.filter_area = chunks[1];
+
+        let main_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+            .split(chunks[0]);
+
+        self.list_area = main_chunks[0];
+        self.details_area = main_chunks[1];
+    }
+
     fn update_filter(&mut self) {
         self.filtered_items = self
             .items
@@ -598,23 +618,10 @@ fn handle_key_event(input_mode: &InputMode, key: event::KeyEvent) -> Option<Mess
 }
 
 fn view(f: &mut Frame, model: &mut Model) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),    // Main View
-            Constraint::Length(3), // Filter Input
-        ])
-        .split(f.area());
-
-    model.filter_area = chunks[1];
-
-    let main_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-        .split(chunks[0]);
-
-    model.list_area = main_chunks[0];
-    model.details_area = main_chunks[1];
+    model.update_layout(f.area());
+    let list_area = model.list_area;
+    let details_area = model.details_area;
+    let filter_area = model.filter_area;
 
     // render list
     let list_items: Vec<ListItem> = model
@@ -642,7 +649,7 @@ fn view(f: &mut Frame, model: &mut Model) {
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
 
-    f.render_stateful_widget(list, main_chunks[0], &mut model.list_state);
+    f.render_stateful_widget(list, list_area, &mut model.list_state);
 
     // render details
     let details_lines = if let Some(idx) = model.list_state.selected() {
@@ -674,14 +681,14 @@ fn view(f: &mut Frame, model: &mut Model) {
         .wrap(Wrap { trim: false })
         .scroll((model.details_scroll, 0));
 
-    f.render_widget(paragraph, main_chunks[1]);
+    f.render_widget(paragraph, details_area);
     // render input
     let input_block_title = match model.input_mode {
         InputMode::Normal => "Filter (Press '/' to edit, Enter/Esc to stop)",
         InputMode::Editing => "Filter (Editing...)",
     };
 
-    let width = chunks[1].width.max(3) - 3; // keep 2 for borders and 1 for cursor
+    let width = filter_area.width.max(3) - 3; // keep 2 for borders and 1 for cursor
     let scroll = model.input.visual_scroll(width as usize);
     let input = Paragraph::new(model.input.value())
         .style(match model.active_pane {
@@ -699,7 +706,7 @@ fn view(f: &mut Frame, model: &mut Model) {
                     Style::default()
                 }),
         );
-    f.render_widget(input, chunks[1]);
+    f.render_widget(input, filter_area);
     match model.input_mode {
         InputMode::Normal =>
             // Hide the cursor. `Frame` does this by default, so we don't need to do anything here
@@ -710,8 +717,8 @@ fn view(f: &mut Frame, model: &mut Model) {
             // rendering
             f.set_cursor_position((
                 // Draft the area of the block
-                chunks[1].x + ((model.input.visual_cursor().max(scroll) - scroll) as u16) + 1,
-                chunks[1].y + 1,
+                filter_area.x + ((model.input.visual_cursor().max(scroll) - scroll) as u16) + 1,
+                filter_area.y + 1,
             ))
         }
     }
