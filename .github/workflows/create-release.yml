@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.versioning.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,3 +73,10 @@ jobs:
           # Push to the branch that triggered the workflow
           git push origin HEAD:${{ github.ref_name }}
           git push origin ${{ steps.versioning.outputs.tag }}
+
+  run-release:
+    needs: create-release
+    uses: ./.github/workflows/release.yml
+    with:
+      tag_name: ${{ needs.create-release.outputs.tag }}
+    secrets: inherit
