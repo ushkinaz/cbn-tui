@@ -376,7 +376,10 @@ fn main() -> Result<()> {
     println!("Loading data from {}...", args.file);
     let content = fs::read_to_string(&args.file)?;
     let root: Root = serde_json::from_str(&content)?;
-    let items: Vec<CbnItem> = root.data.into_iter().map(CbnItem::from_json).collect();
+    let mut items: Vec<CbnItem> = root.data.into_iter().map(CbnItem::from_json).collect();
+
+    // Sort items by type then id
+    items.sort_by(|a, b| a.type_.cmp(&b.type_).then_with(|| a.id.cmp(&b.id)));
 
     // 2. Setup Terminal
     enable_raw_mode()?;
@@ -769,5 +772,23 @@ mod tests {
         assert!(has_green, "Should have green for strings");
         assert!(has_magenta, "Should have magenta for numbers");
         assert!(has_red, "Should have red for booleans");
+    }
+
+    #[test]
+    fn test_sorting() {
+        let mut items = vec![
+            CbnItem::from_json(json!({"id": "z_id", "type": "A_TYPE"})),
+            CbnItem::from_json(json!({"id": "a_id", "type": "B_TYPE"})),
+            CbnItem::from_json(json!({"id": "a_id", "type": "A_TYPE"})),
+        ];
+
+        items.sort_by(|a, b| a.type_.cmp(&b.type_).then_with(|| a.id.cmp(&b.id)));
+
+        assert_eq!(items[0].type_, "A_TYPE");
+        assert_eq!(items[0].id, "a_id");
+        assert_eq!(items[1].type_, "A_TYPE");
+        assert_eq!(items[1].id, "z_id");
+        assert_eq!(items[2].type_, "B_TYPE");
+        assert_eq!(items[2].id, "a_id");
     }
 }
