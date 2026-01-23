@@ -523,22 +523,22 @@ fn view(f: &mut Frame, model: &mut Model) {
     f.render_stateful_widget(list, main_chunks[0], &mut model.list_state);
 
     // render details
-    let details_text = if let Some(idx) = model.list_state.selected() {
+    let details_lines = if let Some(idx) = model.list_state.selected() {
         if idx < model.filtered_items.len() {
             let real_idx = model.filtered_items[idx];
             let item = &model.items[real_idx];
             match serde_json::to_string_pretty(&item.original_json) {
-                Ok(s) => s,
-                Err(_) => "Error parsing JSON".to_string(),
+                Ok(s) => highlight_json(&s),
+                Err(_) => Text::raw("Error parsing JSON"),
             }
         } else {
-            "No item selected".to_string()
+            Text::raw("No item selected")
         }
     } else {
-        "No item selected".to_string()
+        Text::raw("No item selected")
     };
 
-    let paragraph = Paragraph::new(details_text)
+    let paragraph = Paragraph::new(details_lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -553,7 +553,6 @@ fn view(f: &mut Frame, model: &mut Model) {
         .scroll((model.details_scroll, 0));
 
     f.render_widget(paragraph, main_chunks[1]);
-
     // render input
     let input_block_title = match model.input_mode {
         InputMode::Normal => "Filter (Press '/' to edit, Enter/Esc to stop)",
@@ -596,6 +595,107 @@ fn view(f: &mut Frame, model: &mut Model) {
     }
 }
 
+fn highlight_json(json: &str) -> Text<'static> {
+    let mut lines = Vec::new();
+    for line in json.lines() {
+        let mut spans = Vec::new();
+        let mut remaining = line;
+
+        while !remaining.is_empty() {
+            if let Some(pos) = remaining.find('"') {
+                // Add prefix before quotes
+                let prefix = &remaining[..pos];
+                if !prefix.is_empty() {
+                    spans.push(Span::styled(
+                        prefix.to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+
+                let rest = &remaining[pos + 1..];
+                if let Some(end_pos) = rest.find('"') {
+                    let quoted = &rest[..end_pos];
+                    let is_key = rest[end_pos + 1..].trim_start().starts_with(':');
+
+                    if is_key {
+                        spans.push(Span::styled(
+                            format!("\"{}\"", quoted),
+                            Style::default().fg(Color::Cyan),
+                        ));
+                    } else {
+                        spans.push(Span::styled(
+                            format!("\"{}\"", quoted),
+                            Style::default().fg(Color::Green),
+                        ));
+                    }
+                    remaining = &rest[end_pos + 1..];
+                } else {
+                    spans.push(Span::styled(
+                        remaining.to_string(),
+                        Style::default().fg(Color::Green),
+                    ));
+                    remaining = "";
+                }
+            } else {
+                // Process numbers, booleans, and null
+                let mut remaining_processed = remaining;
+                while !remaining_processed.is_empty() {
+                    let trimmed = remaining_processed.trim_start();
+                    let start_offset = remaining_processed.len() - trimmed.len();
+                    if start_offset > 0 {
+                        spans.push(Span::styled(
+                            remaining_processed[..start_offset].to_string(),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+
+                    if trimmed.is_empty() {
+                        break;
+                    }
+
+                    // Find end of token (space, comma, brace, bracket, colon)
+                    let token_end = trimmed
+                        .find(|c: char| c.is_whitespace() || c == ',' || c == '}' || c == ']' || c == ':')
+                        .map(|pos| if pos == 0 { 1 } else { pos })
+                        .unwrap_or(trimmed.len());
+                    let token = &trimmed[..token_end];
+                    let rest = &trimmed[token_end..];
+
+                    if token == "true" || token == "false" || token == "null" {
+                        spans.push(Span::styled(token.to_string(), Style::default().fg(Color::Red)));
+                    } else if token
+                        .chars()
+                        .all(|c| c.is_numeric() || c == '.' || c == '-')
+                        && !token.is_empty()
+                    {
+                        spans.push(Span::styled(
+                            token.to_string(),
+                            Style::default().fg(Color::Magenta),
+                        ));
+                    } else if token == "{"
+                        || token == "}"
+                        || token == "["
+                        || token == "]"
+                        || token == ":"
+                        || token == ","
+                    {
+                        spans.push(Span::styled(token.to_string(), Style::default().fg(Color::Gray)));
+                    } else {
+                        spans.push(Span::styled(
+                            token.to_string(),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    remaining_processed = rest;
+                }
+                remaining = "";
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+    Text::from(lines)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,5 +735,39 @@ mod tests {
         assert!(item.matches("t:monster c:creatures"));
         assert!(item.matches("i:test t:monster"));
         assert!(!item.matches("i:test t:item"));
+    }
+
+    #[test]
+    fn test_highlight_json() {
+        let json = r#"{
+  "id": "test",
+  "count": 123,
+  "active": true,
+  "nested": {
+    "key": "value"
+  }
+}"#;
+        let highlighted = highlight_json(json);
+        // Basic check that we have lines and at least some spans
+        assert!(!highlighted.lines.is_empty());
+        
+        let mut has_cyan = false;
+        let mut has_green = false;
+        let mut has_magenta = false;
+        let mut has_red = false;
+        
+        for line in &highlighted.lines {
+            for span in &line.spans {
+                if span.style.fg == Some(Color::Cyan) { has_cyan = true; }
+                if span.style.fg == Some(Color::Green) { has_green = true; }
+                if span.style.fg == Some(Color::Magenta) { has_magenta = true; }
+                if span.style.fg == Some(Color::Red) { has_red = true; }
+            }
+        }
+        
+        assert!(has_cyan, "Should have cyan for keys");
+        assert!(has_green, "Should have green for strings");
+        assert!(has_magenta, "Should have magenta for numbers");
+        assert!(has_red, "Should have red for booleans");
     }
 }
