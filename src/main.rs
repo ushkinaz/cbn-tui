@@ -1,9 +1,11 @@
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind, DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    },
 };
 use ratatui::{
     prelude::*,
@@ -133,12 +135,24 @@ enum InputMode {
     Editing,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum ActivePane {
+    List,
+    Details,
+    Filter,
+}
+
 enum Message {
     Quit,
     EnterEdit,
     ExitEdit,
     MoveNext,
     MovePrevious,
+    PageUp,
+    PageDown,
+    NextPane,
+    PrevPane,
+    FocusPane(ActivePane),
     Input(Event),
 }
 
@@ -148,7 +162,14 @@ struct Model {
     list_state: ListState,
     input: Input,
     input_mode: InputMode,
+    active_pane: ActivePane,
+    details_scroll: u16,
     should_quit: bool,
+
+    // Store areas for mouse interaction
+    list_area: Rect,
+    details_area: Rect,
+    filter_area: Rect,
 }
 
 impl Model {
@@ -164,7 +185,12 @@ impl Model {
             list_state: state,
             input: Input::default(),
             input_mode: InputMode::Normal,
+            active_pane: ActivePane::List,
+            details_scroll: 0,
             should_quit: false,
+            list_area: Rect::default(),
+            details_area: Rect::default(),
+            filter_area: Rect::default(),
         }
     }
 
@@ -190,12 +216,84 @@ impl Model {
             Message::Quit => self.should_quit = true,
             Message::EnterEdit => self.input_mode = InputMode::Editing,
             Message::ExitEdit => self.input_mode = InputMode::Normal,
-            Message::MoveNext => self.select_next(),
-            Message::MovePrevious => self.select_previous(),
+            Message::MoveNext => self.move_next(),
+            Message::MovePrevious => self.move_previous(),
+            Message::PageUp => self.page_up(),
+            Message::PageDown => self.page_down(),
+            Message::NextPane => self.next_pane(),
+            Message::PrevPane => self.prev_pane(),
+            Message::FocusPane(pane) => self.focus_pane(pane),
             Message::Input(event) => {
                 self.input.handle_event(&event);
                 self.update_filter();
             }
+        }
+    }
+
+    fn next_pane(&mut self) {
+        self.active_pane = match self.active_pane {
+            ActivePane::List => ActivePane::Details,
+            ActivePane::Details => ActivePane::Filter,
+            ActivePane::Filter => ActivePane::List,
+        };
+        if self.active_pane == ActivePane::Filter {
+            self.input_mode = InputMode::Editing;
+        } else {
+            self.input_mode = InputMode::Normal;
+        }
+    }
+
+    fn prev_pane(&mut self) {
+        self.active_pane = match self.active_pane {
+            ActivePane::List => ActivePane::Filter,
+            ActivePane::Filter => ActivePane::Details,
+            ActivePane::Details => ActivePane::List,
+        };
+        if self.active_pane == ActivePane::Filter {
+            self.input_mode = InputMode::Editing;
+        } else {
+            self.input_mode = InputMode::Normal;
+        }
+    }
+
+    fn focus_pane(&mut self, pane: ActivePane) {
+        self.active_pane = pane;
+        if self.active_pane == ActivePane::Filter {
+            self.input_mode = InputMode::Editing;
+        } else {
+            self.input_mode = InputMode::Normal;
+        }
+    }
+
+    fn move_next(&mut self) {
+        match self.active_pane {
+            ActivePane::List => self.select_next(),
+            ActivePane::Details => self.details_scroll = self.details_scroll.saturating_add(1),
+            ActivePane::Filter => {}
+        }
+    }
+
+    fn move_previous(&mut self) {
+        match self.active_pane {
+            ActivePane::List => self.select_previous(),
+            ActivePane::Details => self.details_scroll = self.details_scroll.saturating_sub(1),
+            ActivePane::Filter => {}
+        }
+    }
+
+    fn page_up(&mut self) {
+        match self.active_pane {
+            ActivePane::List => self.select_page_previous(),
+            ActivePane::Details => self.details_scroll = self.details_scroll.saturating_sub(10),
+            ActivePane::Filter => {}
+        }
+    }
+
+    fn page_down(&mut self) {
+        match self.active_pane {
+            ActivePane::List => self.select_page_next(),
+            ActivePane::Details => self.details_scroll = self.details_scroll.saturating_add(10),
+            ActivePane::Filter => {}
         }
     }
 
@@ -214,6 +312,7 @@ impl Model {
             None => 0,
         };
         self.list_state.select(Some(i));
+        self.details_scroll = 0;
     }
 
     fn select_previous(&mut self) {
@@ -226,6 +325,42 @@ impl Model {
                     self.filtered_items.len() - 1
                 } else {
                     i - 1
+                }
+            }
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+        self.details_scroll = 0;
+    }
+
+    fn select_page_next(&mut self) {
+        if self.filtered_items.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => {
+                let next = i + 10; // Page size roughly 10
+                if next >= self.filtered_items.len() {
+                    self.filtered_items.len() - 1
+                } else {
+                    next
+                }
+            }
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+
+    fn select_page_previous(&mut self) {
+        if self.filtered_items.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => {
+                if i < 10 {
+                    0
+                } else {
+                    i - 10
                 }
             }
             None => 0,
@@ -246,7 +381,7 @@ fn main() -> Result<()> {
     // 2. Setup Terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -256,7 +391,11 @@ fn main() -> Result<()> {
 
     // 4. Teardown
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
 
     if let Err(err) = res {
@@ -271,13 +410,9 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, model: &mut Model) -> io::Result<
         terminal.draw(|f| view(f, model))?;
 
         if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                if let Some(msg) = handle_event(&model.input_mode, key) {
-                    model.update(msg);
-                }
+            let event = event::read()?;
+            if let Some(msg) = handle_input_event(&model, &event) {
+                model.update(msg);
             }
         }
 
@@ -287,17 +422,54 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, model: &mut Model) -> io::Result<
     }
 }
 
-fn handle_event(input_mode: &InputMode, key: event::KeyEvent) -> Option<Message> {
+fn handle_input_event(model: &Model, event: &Event) -> Option<Message> {
+    match event {
+        Event::Key(key) => {
+            if key.kind != KeyEventKind::Press {
+                return None;
+            }
+            handle_key_event(&model.input_mode, *key)
+        }
+        Event::Mouse(mouse) => {
+            if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                if model.list_area.contains(Position::new(mouse.column, mouse.row)) {
+                    return Some(Message::FocusPane(ActivePane::List));
+                }
+                if model.details_area.contains(Position::new(mouse.column, mouse.row)) {
+                    return Some(Message::FocusPane(ActivePane::Details));
+                }
+                if model.filter_area.contains(Position::new(mouse.column, mouse.row)) {
+                    return Some(Message::FocusPane(ActivePane::Filter));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn handle_key_event(input_mode: &InputMode, key: event::KeyEvent) -> Option<Message> {
+    match key.code {
+        KeyCode::Tab => return Some(Message::NextPane),
+        KeyCode::BackTab => return Some(Message::PrevPane),
+        KeyCode::Esc => return Some(Message::Quit),
+        _ => {}
+    }
+
     match input_mode {
         InputMode::Normal => match key.code {
             KeyCode::Char('q') => Some(Message::Quit),
             KeyCode::Char('/') => Some(Message::EnterEdit),
             KeyCode::Down | KeyCode::Char('j') => Some(Message::MoveNext),
             KeyCode::Up | KeyCode::Char('k') => Some(Message::MovePrevious),
+            KeyCode::PageDown => Some(Message::PageDown),
+            KeyCode::PageUp => Some(Message::PageUp),
             _ => None,
         },
         InputMode::Editing => match key.code {
-            KeyCode::Enter | KeyCode::Esc => Some(Message::ExitEdit),
+            KeyCode::Enter => Some(Message::ExitEdit),
+            KeyCode::PageDown => Some(Message::PageDown),
+            KeyCode::PageUp => Some(Message::PageUp),
             _ => Some(Message::Input(Event::Key(key))),
         },
     }
@@ -312,10 +484,15 @@ fn view(f: &mut Frame, model: &mut Model) {
         ])
         .split(f.area());
 
+    model.filter_area = chunks[1];
+
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(chunks[0]);
+
+    model.list_area = main_chunks[0];
+    model.details_area = main_chunks[1];
 
     // render list
     let list_items: Vec<ListItem> = model
@@ -330,7 +507,16 @@ fn view(f: &mut Frame, model: &mut Model) {
         .collect();
 
     let list = List::new(list_items)
-        .block(Block::default().borders(Borders::ALL).title("Items"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Items")
+                .border_style(if model.active_pane == ActivePane::List {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default()
+                }),
+        )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
 
@@ -353,8 +539,18 @@ fn view(f: &mut Frame, model: &mut Model) {
     };
 
     let paragraph = Paragraph::new(details_text)
-        .block(Block::default().borders(Borders::ALL).title("Details"))
-        .wrap(Wrap { trim: false });
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Details")
+                .border_style(if model.active_pane == ActivePane::Details {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default()
+                }),
+        )
+        .wrap(Wrap { trim: false })
+        .scroll((model.details_scroll, 0));
 
     f.render_widget(paragraph, main_chunks[1]);
 
@@ -367,15 +563,20 @@ fn view(f: &mut Frame, model: &mut Model) {
     let width = chunks[1].width.max(3) - 3; // keep 2 for borders and 1 for cursor
     let scroll = model.input.visual_scroll(width as usize);
     let input = Paragraph::new(model.input.value())
-        .style(match model.input_mode {
-            InputMode::Normal => Style::default(),
-            InputMode::Editing => Style::default().fg(Color::Yellow),
+        .style(match model.active_pane {
+            ActivePane::Filter => Style::default().fg(Color::Yellow),
+            _ => Style::default(),
         })
         .scroll((0, scroll as u16))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(input_block_title),
+                .title(input_block_title)
+                .border_style(if model.active_pane == ActivePane::Filter {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default()
+                }),
         );
     f.render_widget(input, chunks[1]);
     match model.input_mode {
