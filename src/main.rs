@@ -184,6 +184,7 @@ struct Model {
     active_pane: ActivePane,
     details_scroll: u16,
     should_quit: bool,
+    needs_redraw: bool,
 
     // Store areas for mouse interaction
     list_area: Rect,
@@ -207,6 +208,7 @@ impl Model {
             active_pane: ActivePane::List,
             details_scroll: 0,
             should_quit: false,
+            needs_redraw: true, // Initial render needed
             list_area: Rect::default(),
             details_area: Rect::default(),
             filter_area: Rect::default(),
@@ -251,6 +253,7 @@ impl Model {
     }
 
     fn update(&mut self, msg: Message) {
+        self.needs_redraw = true;
         match msg {
             Message::Quit => self.should_quit = true,
             Message::EnterEdit => self.input_mode = InputMode::Editing,
@@ -549,7 +552,11 @@ fn main() -> Result<()> {
 
 fn run<B: Backend>(terminal: &mut Terminal<B>, model: &mut Model) -> io::Result<()> {
     loop {
-        terminal.draw(|f| view(f, model))?;
+        // Only redraw if model has changed
+        if model.needs_redraw {
+            terminal.draw(|f| view(f, model))?;
+            model.needs_redraw = false;
+        }
 
         if event::poll(Duration::from_millis(50))? {
             let event = event::read()?;
