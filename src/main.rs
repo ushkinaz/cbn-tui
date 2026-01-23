@@ -20,8 +20,16 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Path to the all.json file
-    #[arg(short, long, default_value = "data/all.json")]
-    file: String,
+    #[arg(short, long)]
+    file: Option<String>,
+
+    /// Game version to download (e.g. v0.9.1)
+    #[arg(short, long)]
+    game: Option<String>,
+
+    /// Force download of game data even if cached
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -372,9 +380,44 @@ impl Model {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    let file_path = if let Some(game_version) = args.game {
+        let project_dirs = directories::ProjectDirs::from("com", "cataclysmbn", "cbn-tui")
+            .ok_or_else(|| anyhow::anyhow!("Could not determine cache directory"))?;
+        let version_cache_dir = project_dirs.cache_dir().join(&game_version);
+        fs::create_dir_all(&version_cache_dir)?;
+
+        let target_path = version_cache_dir.join("all.json");
+
+        if args.force || !target_path.exists() {
+            let url = format!(
+                "https://data.cataclysmbn-guide.com/data/{}/all.json",
+                game_version
+            );
+            println!("Downloading data for {} from {}...", game_version, url);
+            let response = reqwest::blocking::get(url)?;
+            if !response.status().is_success() {
+                anyhow::bail!("Failed to download data: {}", response.status());
+            }
+            let bytes = response.bytes()?;
+            fs::write(&target_path, bytes)?;
+        }
+        target_path.to_string_lossy().to_string()
+    } else if let Some(file) = args.file {
+        file
+    } else {
+        "all.json".to_string()
+    };
+
     // 1. Load Data
-    println!("Loading data from {}...", args.file);
-    let content = fs::read_to_string(&args.file)?;
+    println!("Loading data from {}...", file_path);
+    if !std::path::Path::new(&file_path).exists() {
+        if file_path == "all.json" {
+            anyhow::bail!("Default 'all.json' not found in current directory. Use --file or --game to specify data source.");
+        } else {
+            anyhow::bail!("File not found: {}", file_path);
+        }
+    }
+    let content = fs::read_to_string(&file_path)?;
     let root: Root = serde_json::from_str(&content)?;
     let mut items: Vec<CbnItem> = root.data.into_iter().map(CbnItem::from_json).collect();
 
