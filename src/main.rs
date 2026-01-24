@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use cursive::Cursive;
 use cursive::align::HAlign;
 use cursive::theme::{Color, ColorStyle, PaletteColor, Theme};
 use cursive::traits::*;
@@ -7,7 +8,6 @@ use cursive::utils::markup::StyledString;
 use cursive::views::{
     EditView, LinearLayout, Panel, ResizedView, ScrollView, SelectView, TextView,
 };
-use cursive::Cursive;
 use serde::Deserialize;
 use serde_json::Value;
 use std::fs;
@@ -282,7 +282,9 @@ fn main() -> Result<()> {
     println!("Loading data from {}...", file_path);
     if !std::path::Path::new(&file_path).exists() {
         if file_path == "all.json" {
-            anyhow::bail!("Default 'all.json' not found in current directory. Use --file or --game to specify data source.");
+            anyhow::bail!(
+                "Default 'all.json' not found in current directory. Use --file or --game to specify data source."
+            );
         } else {
             anyhow::bail!("File not found: {}", file_path);
         }
@@ -366,6 +368,9 @@ fn build_ui(siv: &mut Cursive) {
     // Populate the list initially
     repopulate_list(siv);
 
+    // Update details for the first item
+    update_details_for_selected(siv);
+
     // Set initial focus on a list
     siv.focus_name("item_list").ok();
 }
@@ -373,14 +378,32 @@ fn build_ui(siv: &mut Cursive) {
 /// Callback triggered when user selects an item in the list.
 /// Updates the details pane with highlighted JSON for the selected item.
 fn on_item_select(siv: &mut Cursive, item_idx: &usize) {
+    update_details_for_item(siv, *item_idx);
+}
+
+/// Updates the details pane with the JSON for the specified item index.
+fn update_details_for_item(siv: &mut Cursive, item_idx: usize) {
     let state = siv.user_data::<AppState>().unwrap();
-    if let Some(item) = state.all_items.get(*item_idx) {
+    if let Some(item) = state.all_items.get(item_idx) {
         if let Ok(json_str) = serde_json::to_string_pretty(&item.original_json) {
             let highlighted = highlight_json(&json_str);
             siv.call_on_name("details", |view: &mut ScrollView<TextView>| {
                 view.get_inner_mut().set_content(highlighted);
             });
         }
+    }
+}
+
+/// Updates the details pane for the currently selected item in the list.
+fn update_details_for_selected(siv: &mut Cursive) {
+    let selected_idx = siv
+        .call_on_name("item_list", |view: &mut SelectView<usize>| {
+            view.selection().map(|rc| *rc)
+        })
+        .flatten();
+
+    if let Some(idx) = selected_idx {
+        update_details_for_item(siv, idx);
     }
 }
 
@@ -483,6 +506,9 @@ fn repopulate_list(siv: &mut Cursive) {
             view.set_selection(0);
         }
     });
+
+    // Update details after repopulating the list
+    update_details_for_selected(siv);
 }
 
 /// Applies syntax highlighting to JSON text using theme-consistent colors.
