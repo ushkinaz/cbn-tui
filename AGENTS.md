@@ -2,7 +2,7 @@
 
 Purpose
 - Terminal UI browser for Cataclysm: Bright Nights JSON data.
-- Default dataset for analysis `data/all.json`.
+- Real data for analysis is in `data/all.json`.
 - Schema reference lives in `reference/types.ts` (TypeScript typings).
 
 Repository Layout
@@ -26,6 +26,11 @@ Build, Run, Lint, Test
 - Format: `cargo fmt --all`
 - Format check: `cargo fmt --all -- --check`
 - Lint: `cargo clippy --all-targets --all-features`
+
+Testing Expectations
+- Never delete tests without explicit permission; keep coverage the same or improved.
+- If refactoring breaks a test, fix the test or code instead of removing it.
+- For bug fixes, follow TDD: add or update a failing test before the fix.
 
 Data Download and Caching
 - Downloaded files live under the OS cache directory from `directories::ProjectDirs`.
