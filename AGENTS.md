@@ -41,14 +41,15 @@ Cataclysm:BN JSON Structure
 - Some fields can be arrays or objects based on type.
 
 Coding Style (Rust)
-- Follow The Elm Architecture per ratatui: `Model`, `Message`, `update`, `view`, `handle_event`, and `run` naming.
+- Follow Cursive's callback-driven architecture: `build_ui`, callbacks, and user data.
 - Formatting: rely on rustfmt; keep default style.
 - Imports grouped by crate, multi-line use blocks are preferred.
 - Use `snake_case` for functions/fields and `PascalCase` for types.
 - Reserved words use suffixes: `type_`, `abstract_`.
 - Prefer small helper methods for logic (see `CbnItem::from_json`).
-- Keep UI layout in `view` and input loop in `run`.
+- Keep UI layout in `build_ui` and callbacks for interaction.
 - Keep data parsing in `main` or dedicated helpers.
+- Store application state in Cursive's user data via `set_user_data()`.
 
 Error Handling
 - Use `anyhow::Result` for `main`.
@@ -64,14 +65,14 @@ Data and JSON Handling
 - Keep filtering case-insensitive and fast for large inputs.
 
 UI and Interaction Conventions
-- Keyboard flow: `q` quits, `/` enters filter input.
-- Up/down or `j`/`k` move selection.
-- Use the `ratatui` library for all UI components and layout.
-- Keep highlight style consistent with ratatui defaults.
-- Layout uses vertical split with list/details and filter input.
+- Use the `cursive` library for all UI components and layout.
+- Use `SelectView` for lists, `TextView` with `ScrollView` for scrollable content.
+- Use `EditView` for text input with callbacks.
+- Layout uses `LinearLayout` (horizontal/vertical) and `Panel` for borders.
+- Active pane indicated by border color (yellow for focused).
 
 Performance Notes
-- The dataset is large; avoid repeated full scans where possible.
+- The dataset is large; avoid repeated full scans where possible, use `jq`
 - Filtering should be linear and low-allocation.
 - Prefer indexing into `items` via `filtered_items` indices.
 

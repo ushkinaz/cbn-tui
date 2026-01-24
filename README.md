@@ -1,6 +1,6 @@
 # cbn-tui 🚀
 
-A lightning-fast Terminal User Interface (TUI) browser for **Cataclysm: Bright Nights** JSON data. Written in Rust using [Ratatui](https://ratatui.rs/).
+Terminal User Interface (TUI) browser for **Cataclysm: Bright Nights** JSON data.
 
 ![cbn-tui screenshot](./screenshot.png)
 
@@ -18,33 +18,25 @@ A lightning-fast Terminal User Interface (TUI) browser for **Cataclysm: Bright N
 
 ## ⌨️ Desktop Controls
 
-| Key | Action |
-|-----|--------|
-| `q` / `Esc` | Quit Application |
-| `/` | Enter Filter Mode |
-| `Enter` | Exit Filter Mode |
-| `Tab` / `Shift-Tab` | Cycle Focused Pane (List / Details / Filter) |
-| `j` / `k` or `↑` / `↓` | Move selection or scroll details |
-| `PageUp` / `PageDown` | Scroll faster (10 items at a time) |
-| `Click` | Focus pane or select item |
+| Key                    | Action                                       |
+|------------------------|----------------------------------------------|
+| `q` / `Esc`            | Quit Application                             |
+| `/`                    | Enter Filter Mode                            |
+| `Enter`                | Exit Filter Mode                             |
+| `Tab` / `Shift-Tab`    | Cycle Focused Pane (List / Details / Filter) |
+| `j` / `k` or `↑` / `↓` | Move selection or scroll details             |
+| `PageUp` / `PageDown`  | Scroll faster (10 items at a time)           |
+| `Click`                | Focus pane or select item                    |
 
 ## 🚀 Getting Started
 
 ### Prerequisites
-- [Rust](https://rustup.rs/) (latest stable)
+ 
+- No life
 
-### Installation
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/your-repo/cbn-tui.git
-   cd cbn-tui
-   ```
-2. Build and run:
-   ```bash
-   cargo run --release
-   ```
+### Running the Application
 
-By default, the application looks for data in `data/all.json`. You can specify a different file using the `--file` flag:
+By default, the application looks for data in `all.json`. You can specify a different file using the `--file` flag:
 ```bash
 cargo run -- --file path/to/your/data.json
 ```
