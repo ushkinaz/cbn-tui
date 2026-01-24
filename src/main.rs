@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use cursive::align::HAlign;
-use cursive::theme::{BaseColor, Color, ColorStyle};
+use cursive::theme::{Color, ColorStyle, PaletteColor, Theme};
 use cursive::traits::*;
 use cursive::utils::markup::StyledString;
 use cursive::views::{
@@ -285,6 +285,7 @@ fn main() -> Result<()> {
 
     // Create Cursive app
     let mut siv = cursive::default();
+    siv.set_theme(solarized_dark());
 
     // Initialize state
     let filtered_indices: Vec<usize> = (0..items.len()).collect();
@@ -395,6 +396,49 @@ fn on_filter_edit(siv: &mut Cursive, query: &str, _cursor: usize) {
     repopulate_list(siv);
 }
 
+/// Returns a Cursive theme based on the Solarized Dark color palette.
+fn solarized_dark() -> Theme {
+    let mut theme = Theme::default();
+
+    // Solarized Dark palette
+    let base03 = Color::Rgb(0, 43, 54);
+    let base02 = Color::Rgb(7, 54, 66);
+    let base01 = Color::Rgb(88, 110, 117);
+    let base00 = Color::Rgb(101, 123, 131);
+    let base0 = Color::Rgb(131, 148, 150);
+    let base3 = Color::Rgb(253, 246, 227);
+    let yellow = Color::Rgb(181, 137, 0);
+    let blue = Color::Rgb(38, 139, 210);
+
+    {
+        let palette = &mut theme.palette;
+
+        palette[PaletteColor::Background] = base03;
+        palette[PaletteColor::View] = base02;
+        palette[PaletteColor::Shadow] = Color::Rgb(0, 0, 0); // Pure black for shadows
+
+        palette[PaletteColor::Primary] = base0;
+        palette[PaletteColor::Secondary] = base01;
+        palette[PaletteColor::Tertiary] = base00;
+
+        palette[PaletteColor::TitlePrimary] = blue;
+        palette[PaletteColor::TitleSecondary] = yellow;
+
+        palette[PaletteColor::Highlight] = blue;
+        palette[PaletteColor::HighlightInactive] = base01;
+        palette[PaletteColor::HighlightText] = base3;
+
+        // Custom borders/panels
+        // Cursive uses Yellow (for active) and White (for inactive) by default for Panel borders
+        // but it's better to keep it consistent with the palette.
+    }
+
+    // Border style
+    theme.borders = cursive::theme::BorderStyle::Simple;
+
+    theme
+}
+
 /// Helper function to repopulate the item list from the current filtered indices.
 /// Clears and rebuilds the SelectView with filtered items.
 fn repopulate_list(siv: &mut Cursive) {
@@ -429,16 +473,20 @@ fn repopulate_list(siv: &mut Cursive) {
     });
 }
 
-/// Applies syntax highlighting to JSON text.
-/// 
-/// Color scheme:
-/// - Keys: Cyan
-/// - String values: Green
-/// - Numbers: Magenta
-/// - Booleans/null: Red
-/// - Punctuation: Gray
+/// Applies syntax highlighting to JSON text using theme-consistent colors.
 fn highlight_json(json: &str) -> StyledString {
     let mut result = StyledString::new();
+
+    // Use palette roles for the foundation styles
+    // This ensures highlighting background matches the View background exactly.
+    let style_default = ColorStyle::new(PaletteColor::Primary, PaletteColor::View);
+    let style_key = ColorStyle::new(PaletteColor::TitlePrimary, PaletteColor::View);
+    let style_punct = ColorStyle::new(PaletteColor::Secondary, PaletteColor::View);
+
+    // Accent colors for values (Solarized palette accents)
+    let col_string = Color::Rgb(133, 153, 0); // Green
+    let col_num = Color::Rgb(211, 54, 130);    // Magenta
+    let col_bool = Color::Rgb(220, 50, 47);   // Red
 
     for line in json.lines() {
         let mut remaining = line;
@@ -448,10 +496,7 @@ fn highlight_json(json: &str) -> StyledString {
                 // Add prefix before quotes
                 let prefix = &remaining[..pos];
                 if !prefix.is_empty() {
-                    result.append_styled(
-                        prefix,
-                        ColorStyle::new(Color::Dark(BaseColor::White), Color::TerminalDefault),
-                    );
+                    result.append_styled(prefix, style_default);
                 }
 
                 let rest = &remaining[pos + 1..];
@@ -460,11 +505,9 @@ fn highlight_json(json: &str) -> StyledString {
                     let is_key = rest[end_pos + 1..].trim_start().starts_with(':');
 
                     let quote_style = if is_key {
-                        // Keys in cyan
-                        ColorStyle::new(Color::Dark(BaseColor::Cyan), Color::TerminalDefault)
+                        style_key
                     } else {
-                        // String values in green
-                        ColorStyle::new(Color::Dark(BaseColor::Green), Color::TerminalDefault)
+                        ColorStyle::new(col_string, PaletteColor::View)
                     };
 
                     result.append_styled(format!("\"{}\"", quoted), quote_style);
@@ -472,7 +515,7 @@ fn highlight_json(json: &str) -> StyledString {
                 } else {
                     result.append_styled(
                         remaining,
-                        ColorStyle::new(Color::Dark(BaseColor::Green), Color::TerminalDefault),
+                        ColorStyle::new(col_string, PaletteColor::View),
                     );
                     remaining = "";
                 }
@@ -483,17 +526,13 @@ fn highlight_json(json: &str) -> StyledString {
                     let trimmed = remaining_processed.trim_start();
                     let start_offset = remaining_processed.len() - trimmed.len();
                     if start_offset > 0 {
-                        result.append_styled(
-                            &remaining_processed[..start_offset],
-                            ColorStyle::new(Color::Dark(BaseColor::White), Color::TerminalDefault),
-                        );
+                        result.append_styled(&remaining_processed[..start_offset], style_default);
                     }
 
                     if trimmed.is_empty() {
                         break;
                     }
 
-                    // Find end of token (space, comma, brace, bracket, colon)
                     let token_end = trimmed
                         .find(|c: char| {
                             c.is_whitespace() || c == ',' || c == '}' || c == ']' || c == ':'
@@ -504,15 +543,13 @@ fn highlight_json(json: &str) -> StyledString {
                     let rest = &trimmed[token_end..];
 
                     let token_style = if token == "true" || token == "false" || token == "null" {
-                        // Booleans and null in red
-                        ColorStyle::new(Color::Dark(BaseColor::Red), Color::TerminalDefault)
+                        ColorStyle::new(col_bool, PaletteColor::View)
                     } else if token
                         .chars()
                         .all(|c| c.is_numeric() || c == '.' || c == '-')
                         && !token.is_empty()
                     {
-                        // Numbers in magenta
-                        ColorStyle::new(Color::Dark(BaseColor::Magenta), Color::TerminalDefault)
+                        ColorStyle::new(col_num, PaletteColor::View)
                     } else if token == "{"
                         || token == "}"
                         || token == "["
@@ -520,11 +557,9 @@ fn highlight_json(json: &str) -> StyledString {
                         || token == ":"
                         || token == ","
                     {
-                        // Punctuation in gray
-                        ColorStyle::new(Color::Light(BaseColor::Black), Color::TerminalDefault)
+                        style_punct
                     } else {
-                        // Default
-                        ColorStyle::new(Color::Dark(BaseColor::White), Color::TerminalDefault)
+                        style_default
                     };
 
                     result.append_styled(token, token_style);
