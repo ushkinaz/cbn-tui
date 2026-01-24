@@ -1,88 +1,138 @@
 # Agent Guide for cbn-tui
 
 Purpose
-- Terminal UI browser for Cataclysm:BN JSON data.
-- Default dataset from this crate is `data/all.json` (relative to `tui/`).
+- Terminal UI browser for Cataclysm: Bright Nights JSON data.
+- Default dataset is `all.json` in the repo root (current working directory).
 - Schema reference lives in `reference/types.ts` (TypeScript typings).
 
 Repository Layout
 - `Cargo.toml`: crate metadata and dependencies.
-- `src/main.rs`: application entry point and UI logic.
+- `src/main.rs`: application entry point, UI, state, and tests.
 - `target/`: build artifacts (do not edit).
 
 Build, Run, Lint, Test
 - Build: `cargo build`
-- Run: `cargo run -- --file data/all.json`
-- Run with default file: `cargo run`
-- Test: `cargo test`
-- Single test: `cargo test <test_name>`
-- Single test in module: `cargo test <module>::<test_name>`
-- Format (if needed): `cargo fmt --all`
-- Lint (if needed): `cargo clippy --all-targets --all-features`
+- Run with a default file: `cargo run`
+- Run with a custom file: `cargo run -- --file /path/to/all.json`
+- Run with download: `cargo run -- --game nightly`
+- List versions: `cargo run -- --game-versions`
+- Test all: `cargo test`
+- Single test: `cargo test test_matches`
+- Single test in module: `cargo test tests::test_matches`
+- Single test exact: `cargo test test_matches -- --exact`
+- Test with output: `cargo test test_matches -- --nocapture`
+- List tests: `cargo test -- --list`
+- Run ignored tests (if any): `cargo test -- --ignored`
+- Format: `cargo fmt --all`
+- Format check: `cargo fmt --all -- --check`
+- Lint: `cargo clippy --all-targets --all-features`
 
-Large JSON Workflow
-- Truth: `data/all.json` is the compiled data blob.
-- Large file handling: ~30MB, never read the whole file; use `jq`.
-- Primary fields: `id`, `abstract`, `type`, `category`.
+Data Download and Caching
+- Downloaded files live under the OS cache directory from `directories::ProjectDirs`.
+- Cached path includes the game version, then `all.json` (per `--game`).
+- The build list cache (`builds.json`) expires after one hour.
+- Nightly data cache expires after 12 hours; stable cache after 30 days.
+- Keep network logic synchronous using `reqwest::blocking`.
+- Always check HTTP status before reading response bytes.
+- Cache directories are created with `fs::create_dir_all` before writes.
+- Use `--force` to bypass age checks and refresh cached content.
+
+Large JSON Workflow (jq)
+- `all.json` can be tens of MB; avoid opening in editors.
+- Use `jq` for targeted queries and keep commands in docs/notes.
+- Primary fields: `id`, `abstract`, `type`, `category`, `name`.
 - Filter specific item
-  - `jq '.data[] | select(.id=="<id>" and .type=="<type>")' data/all.json`
+  - `jq '.data[] | select(.id=="<id>" and .type=="<type>")' all.json`
 - List all IDs of a type
-  - `jq '.data[] | select(.type=="item") | .id' -r data/all.json`
-- Find items with specific property
-  - `jq '.data[] | select(.color == "RED")' data/all.json`
+  - `jq -r '.data[] | select(.type=="item") | .id' all.json`
+- Find items with a specific property
+  - `jq '.data[] | select(.color == "RED")' all.json`
 - Show types with counts
-  - `jq -r '.data[] | .type' data/all.json | sort | uniq -c | sort -nr`
+  - `jq -r '.data[] | .type' all.json | sort | uniq -c | sort -nr`
 - Inheritance: raw JSON uses `copy-from`; check the parent when fields are missing.
-- Resolution: use `../src/data.ts` (`CBNData` / `_flatten`) for resolved values.
+- `abstract` entries often define shared defaults; resolve with `copy-from` manually.
+- The app is read-only; no mutation of JSON is performed.
 
 Cataclysm:BN JSON Structure
-- Top-level file has `{ data: [...] }`.
-- Records often include `id`, `abstract`, `type`, `category`.
-- Some fields can be arrays or objects based on type.
+- Top-level file is `{ "data": [ ... ] }`.
+- Each record is an object with optional `id`, `abstract`, `type`, `category`.
+- `name` can be a string or an object with a `.str` field.
+- Missing fields are common; treat them as empty strings for filtering.
+- Some values are arrays or nested objects; parsing must stay tolerant.
+- IDs are not guaranteed unique across types; include `type` in filters.
+- `abstract` objects are templates, not always user-facing entries.
+- Name formatting can vary by record type; keep display logic defensive.
 
 Coding Style (Rust)
-- Follow Cursive's callback-driven architecture: `build_ui`, callbacks, and user data.
-- Formatting: rely on rustfmt; keep default style.
-- Imports grouped by crate, multi-line use blocks are preferred.
-- Use `snake_case` for functions/fields and `PascalCase` for types.
-- Reserved words use suffixes: `type_`, `abstract_`.
-- Prefer small helper methods for logic (see `CbnItem::from_json`).
-- Keep UI layout in `build_ui` and callbacks for interaction.
-- Keep data parsing in `main` or dedicated helpers.
-- Store application state in Cursive's user data via `set_user_data()`.
+- Keep `build_ui` focused on layout; callbacks handle behavior.
+- Store `AppState` in `Cursive` user data via `set_user_data`.
+- Use helper functions like `CbnItem::from_json` and `highlight_json`.
+- Formatting: rely on rustfmt defaults; avoid manual alignment.
+- Prefer explicit `String` conversions at boundaries.
+- Avoid unnecessary clones of `serde_json::Value` or large strings.
+- Prefer early returns for guard clauses and error conditions.
+- Keep filtering logic in `CbnItem::matches` case-insensitive.
+- Tests live in `#[cfg(test)]` module inside `src/main.rs`.
+- Keep UI callbacks small and focused; avoid heavy work in `on_select`.
+- Use local variables for repeated lookups to reduce borrow complexity.
+
+Imports and Naming
+- Group imports by crate; keep `std` imports last.
+- Prefer multi-line `use` blocks for long import lists.
+- Avoid glob imports; list the necessary items explicitly.
+- Use `snake_case` for functions, locals, and fields.
+- Use `PascalCase` for types and enums.
+- Suffix reserved words with `_`, e.g., `type_`, `abstract_`.
+- Use descriptive names for view IDs (`"item_list"`, `"details"`, `"filter"`).
 
 Error Handling
-- Use `anyhow::Result` for `main`.
-- Propagate errors with `?`.
-- Use `io::Result` for terminal loop functions.
-- Avoid panic except for truly impossible states.
-- Prefer explicit messages for recoverable errors.
+- `main` returns `anyhow::Result<()>`.
+- Use `anyhow::bail!` for user-facing errors (missing files, HTTP failures).
+- Prefer `?` for propagation over `unwrap`.
+- `unwrap` is acceptable when an invariant is guaranteed (e.g., user data set).
+- Keep error messages actionable; include file paths or HTTP status codes.
+- Avoid panics outside tests or truly unreachable branches.
+- Add context with `anyhow::Context` if an error message needs more detail.
 
 Data and JSON Handling
-- Use `serde` and `serde_json::Value` for flexible parsing.
-- Use `serde::Deserialize` for typed data when possible.
-- Avoid cloning large JSON values unless necessary.
-- Keep filtering case-insensitive and fast for large inputs.
+- Use `serde_json::Value` for flexible parsing.
+- Use `serde::Deserialize` for stable structs (`Root`, `GameBuild`).
+- `serde_json` is configured with `preserve_order`; keep this if reformatting.
+- The `matches` function lowercases once per term; avoid repeated work elsewhere.
+- Prefer linear scans to complex indices unless profiling proves needed.
+- Keep UI rendering from JSON via `serde_json::to_string_pretty`.
+- Extract fields with `Value::get` + `as_str` and fallback to empty strings.
+- When parsing `name`, check both string and `{ "str": ... }` forms.
+- Avoid storing derived strings that can be computed once per item.
 
 UI and Interaction Conventions
-- Use the `cursive` library for all UI components and layout.
-- Use `SelectView` for lists, `TextView` with `ScrollView` for scrollable content.
-- Use `EditView` for text input with callbacks.
-- Layout uses `LinearLayout` (horizontal/vertical) and `Panel` for borders.
-- Active pane indicated by border color (yellow for focused).
+- Use `cursive` for all views and layout.
+- `SelectView` drives the list, `ScrollView<TextView>` shows details.
+- Update UI via `call_on_name` and `with_name` identifiers.
+- Use `StyledString` for syntax highlighting; keep palette-consistent colors.
+- Theme lives in `solarized_dark`; prefer `PaletteColor` roles.
+- Global keybindings: `q`/`Esc` quit, `/` focuses filter.
+- Filter input uses `on_edit` and repopulates the list.
+- Prefer `Panel` and `ResizedView` helpers for sizing consistency.
+- Keep layout split consistent with `Elements` (left) and details (right).
 
 Performance Notes
-- The dataset is large; avoid repeated full scans where possible, use `jq`
-- Filtering should be linear and low-allocation.
-- Prefer indexing into `items` via `filtered_items` indices.
+- Dataset is large; avoid repeated scans when possible.
+- Filtering should be O(n) on `all_items`.
+- Store filtered indices instead of cloning items.
+- Keep string allocations in hot loops to a minimum.
+- Avoid repeated `to_string_pretty` calls unless selection changes.
+- Keep highlight work scoped to the visible selection.
 
 Agent Expectations
-- Do not edit `target/` or generated files.
-- Avoid adding new dependencies unless required.
-- Keep changes minimal and localized.
-- Follow repository conventions for naming and structure.
+- Do not edit `target/` or cached `all.json` files.
+- Avoid adding dependencies unless required by the task.
+- Keep changes minimal and localized to `src/main.rs` unless refactoring.
+- Preserve existing UI patterns and theme choices.
+- Do not edit cached downloads under OS cache directories.
+- Avoid running heavy commands on `all.json` without `jq` filters.
 
 Commit Message Rules
-- All commits must follow Conventional Commits.
+- All commits follow Conventional Commits.
 - Format: `type(scope): summary`.
 - Examples: `feat(tui): add search highlights`, `fix(parser): handle empty ids`.
