@@ -24,8 +24,8 @@ struct Args {
     file: Option<String>,
 
     /// Game version to download (e.g., v0.9.1, stable, nightly)
-    #[arg(short, long)]
-    game: Option<String>,
+    #[arg(short, long, default_value = "nightly")]
+    game: String,
 
     /// Force download of game data even if cached
     #[arg(long)]
@@ -126,7 +126,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let file_path = if let Some(game_version) = args.game {
+    let file_path = if let Some(file) = args.file {
+        file
+    } else {
+        let game_version = args.game;
         let project_dirs = directories::ProjectDirs::from("com", "cataclysmbn", "cbn-tui")
             .ok_or_else(|| anyhow::anyhow!("Could not determine cache directory"))?;
         let version_cache_dir = project_dirs.cache_dir().join(&game_version);
@@ -165,10 +168,6 @@ fn main() -> Result<()> {
             fs::write(&target_path, bytes)?;
         }
         target_path.to_string_lossy().to_string()
-    } else if let Some(file) = args.file {
-        file
-    } else {
-        "all.json".to_string()
     };
 
     // Load Data
