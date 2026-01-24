@@ -52,14 +52,18 @@ struct CbnItem {
     original_json: Value,
     /// Display name derived from id, abstract, or name field
     display_name: String,
-    /// Item ID for filtering
+    /// Pre-lowercased item ID for filtering
+    id_lower: String,
+    /// Original item ID for sorting/display
     id: String,
-    /// Item type for filtering and sorting
+    /// Pre-lowercased item type for filtering
+    type_lower: String,
+    /// Original item type for sorting
     type_: String,
-    /// Item category for filtering
-    category: String,
-    /// Abstract identifier for filtering
-    abstract_: String,
+    /// Pre-lowercased item category for filtering
+    category_lower: String,
+    /// Pre-lowercased abstract identifier for filtering
+    abstract_lower: String,
 }
 
 impl CbnItem {
@@ -97,6 +101,11 @@ impl CbnItem {
             .unwrap_or("")
             .to_string();
 
+        let id_lower = id.to_lowercase();
+        let abstract_lower = abstract_.to_lowercase();
+        let type_lower = type_.to_lowercase();
+        let category_lower = category.to_lowercase();
+
         let display_name = if !id.is_empty() {
             id.clone()
         } else if !abstract_.is_empty() {
@@ -110,10 +119,12 @@ impl CbnItem {
         Self {
             original_json: v,
             display_name,
+            id_lower,
             id,
+            type_lower,
             type_,
-            category,
-            abstract_,
+            category_lower,
+            abstract_lower,
         }
     }
 
@@ -122,7 +133,7 @@ impl CbnItem {
     /// - `id:` or `i:` for filtering by ID
     /// - `type:` or `t:` for filtering by type
     /// - `category:` or `c:` for filtering by category
-    /// Multiple terms are combined using AND logic.
+    ///   Multiple terms are combined using AND logic.
     fn matches(&self, query: &str) -> bool {
         if query.is_empty() {
             return true;
@@ -132,22 +143,22 @@ impl CbnItem {
             let part_lower = part.to_lowercase();
 
             let match_found = if let Some(val) = part_lower.strip_prefix("id:") {
-                self.id.to_lowercase().contains(val)
+                self.id_lower.contains(val)
             } else if let Some(val) = part_lower.strip_prefix("i:") {
-                self.id.to_lowercase().contains(val)
+                self.id_lower.contains(val)
             } else if let Some(val) = part_lower.strip_prefix("type:") {
-                self.type_.to_lowercase().contains(val)
+                self.type_lower.contains(val)
             } else if let Some(val) = part_lower.strip_prefix("t:") {
-                self.type_.to_lowercase().contains(val)
+                self.type_lower.contains(val)
             } else if let Some(val) = part_lower.strip_prefix("category:") {
-                self.category.to_lowercase().contains(val)
+                self.category_lower.contains(val)
             } else if let Some(val) = part_lower.strip_prefix("c:") {
-                self.category.to_lowercase().contains(val)
+                self.category_lower.contains(val)
             } else {
-                self.id.to_lowercase().contains(&part_lower)
-                    || self.type_.to_lowercase().contains(&part_lower)
-                    || self.abstract_.to_lowercase().contains(&part_lower)
-                    || self.category.to_lowercase().contains(&part_lower)
+                self.id_lower.contains(&part_lower)
+                    || self.type_lower.contains(&part_lower)
+                    || self.abstract_lower.contains(&part_lower)
+                    || self.category_lower.contains(&part_lower)
             };
 
             if !match_found {
@@ -264,7 +275,7 @@ fn main() -> Result<()> {
     } else if let Some(file) = args.file {
         file
     } else {
-            "all.json".to_string()
+        "all.json".to_string()
     };
 
     // Load Data
@@ -276,8 +287,9 @@ fn main() -> Result<()> {
             anyhow::bail!("File not found: {}", file_path);
         }
     }
-    let content = fs::read_to_string(&file_path)?;
-    let root: Root = serde_json::from_str(&content)?;
+    let file = fs::File::open(&file_path)?;
+    let reader = std::io::BufReader::new(file);
+    let root: Root = serde_json::from_reader(reader)?;
     let mut items: Vec<CbnItem> = root.data.into_iter().map(CbnItem::from_json).collect();
 
     // Sort items by type then id
@@ -485,14 +497,30 @@ fn highlight_json(json: &str) -> StyledString {
 
     // Accent colors for values (Solarized palette accents)
     let col_string = Color::Rgb(133, 153, 0); // Green
-    let col_num = Color::Rgb(211, 54, 130);    // Magenta
-    let col_bool = Color::Rgb(220, 50, 47);   // Red
+    let col_num = Color::Rgb(211, 54, 130); // Magenta
+    let col_bool = Color::Rgb(220, 50, 47); // Red
 
     for line in json.lines() {
         let mut remaining = line;
 
         while !remaining.is_empty() {
             if let Some(pos) = remaining.find('"') {
+                // Check if this quote is escaped
+                let mut is_escaped = false;
+                let mut j = pos;
+                while j > 0 && remaining.as_bytes()[j - 1] == b'\\' {
+                    is_escaped = !is_escaped;
+                    j -= 1;
+                }
+
+                if is_escaped {
+                    // This quote is escaped, treat it as normal text and continue searching
+                    let prefix = &remaining[..pos + 1];
+                    result.append_styled(prefix, style_default);
+                    remaining = &remaining[pos + 1..];
+                    continue;
+                }
+
                 // Add prefix before quotes
                 let prefix = &remaining[..pos];
                 if !prefix.is_empty() {
@@ -500,9 +528,27 @@ fn highlight_json(json: &str) -> StyledString {
                 }
 
                 let rest = &remaining[pos + 1..];
-                if let Some(end_pos) = rest.find('"') {
-                    let quoted = &rest[..end_pos];
-                    let is_key = rest[end_pos + 1..].trim_start().starts_with(':');
+                // Find next UNESCAPED quote
+                let mut end_pos = None;
+                let mut search_idx = 0;
+                while let Some(q_pos) = rest[search_idx..].find('"') {
+                    let actual_q_pos = search_idx + q_pos;
+                    let mut is_q_escaped = false;
+                    let mut k = actual_q_pos;
+                    while k > 0 && rest.as_bytes()[k - 1] == b'\\' {
+                        is_q_escaped = !is_q_escaped;
+                        k -= 1;
+                    }
+                    if !is_q_escaped {
+                        end_pos = Some(actual_q_pos);
+                        break;
+                    }
+                    search_idx = actual_q_pos + 1;
+                }
+
+                if let Some(ep) = end_pos {
+                    let quoted = &rest[..ep];
+                    let is_key = rest[ep + 1..].trim_start().starts_with(':');
 
                     let quote_style = if is_key {
                         style_key
@@ -511,12 +557,10 @@ fn highlight_json(json: &str) -> StyledString {
                     };
 
                     result.append_styled(format!("\"{}\"", quoted), quote_style);
-                    remaining = &rest[end_pos + 1..];
+                    remaining = &rest[ep + 1..];
                 } else {
-                    result.append_styled(
-                        remaining,
-                        ColorStyle::new(col_string, PaletteColor::View),
-                    );
+                    result
+                        .append_styled(remaining, ColorStyle::new(col_string, PaletteColor::View));
                     remaining = "";
                 }
             } else {
@@ -544,10 +588,10 @@ fn highlight_json(json: &str) -> StyledString {
 
                     let token_style = if token == "true" || token == "false" || token == "null" {
                         ColorStyle::new(col_bool, PaletteColor::View)
-                    } else if token
-                        .chars()
-                        .all(|c| c.is_numeric() || c == '.' || c == '-')
-                        && !token.is_empty()
+                    } else if (token.chars().all(|c| {
+                        c.is_numeric() || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+'
+                    })) && !token.is_empty()
+                        && token.chars().any(|c| c.is_numeric())
                     {
                         ColorStyle::new(col_num, PaletteColor::View)
                     } else if token == "{"
