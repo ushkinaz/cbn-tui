@@ -2,7 +2,7 @@
 
 Purpose
 - Terminal UI browser for Cataclysm: Bright Nights JSON data.
-- Default dataset is `all.json` in the repo root (current working directory).
+- Default dataset for analysis `data/all.json`.
 - Schema reference lives in `reference/types.ts` (TypeScript typings).
 
 Repository Layout
