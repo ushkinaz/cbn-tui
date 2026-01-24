@@ -12,6 +12,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::fs;
 
+mod matcher;
+mod search_index;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -44,138 +47,17 @@ struct GameBuild {
     created_at: String,
 }
 
-/// Represents a single item from the Cataclysm:BN JSON data.
-/// Stores both the original JSON and extracted fields for filtering and display.
-#[derive(Clone)]
-struct CbnItem {
-    /// The original JSON value for this item
-    original_json: Value,
-    /// Display name derived from id, abstract, or name field
-    display_name: String,
-    /// Pre-lowercased item ID for filtering
-    id_lower: String,
-    /// Original item ID for sorting/display
-    id: String,
-    /// Pre-lowercased item type for filtering
-    type_lower: String,
-    /// Original item type for sorting
-    type_: String,
-    /// Pre-lowercased item category for filtering
-    category_lower: String,
-    /// Pre-lowercased abstract identifier for filtering
-    abstract_lower: String,
-}
-
-impl CbnItem {
-    fn from_json(v: Value) -> Self {
-        let id = v
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let abstract_ = v
-            .get("abstract")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let name = v
-            .get("name")
-            .and_then(|v| {
-                if v.is_object() {
-                    v.get("str").and_then(|s| s.as_str())
-                } else {
-                    v.as_str()
-                }
-            })
-            .unwrap_or("")
-            .to_string();
-
-        let type_ = v
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let category = v
-            .get("category")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let id_lower = id.to_lowercase();
-        let abstract_lower = abstract_.to_lowercase();
-        let type_lower = type_.to_lowercase();
-        let category_lower = category.to_lowercase();
-
-        let display_name = if !id.is_empty() {
-            id.clone()
-        } else if !abstract_.is_empty() {
-            format!("(abstract) {}", abstract_)
-        } else if !name.is_empty() {
-            name
-        } else {
-            "(unknown)".to_string()
-        };
-
-        Self {
-            original_json: v,
-            display_name,
-            id_lower,
-            id,
-            type_lower,
-            type_,
-            category_lower,
-            abstract_lower,
-        }
-    }
-
-    /// Checks if the item matches the given search query.
-    /// Supports prefixes:
-    /// - `id:` or `i:` for filtering by ID
-    /// - `type:` or `t:` for filtering by type
-    /// - `category:` or `c:` for filtering by category
-    ///   Multiple terms are combined using AND logic.
-    fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-
-        for part in query.split_whitespace() {
-            let part_lower = part.to_lowercase();
-
-            let match_found = if let Some(val) = part_lower.strip_prefix("id:") {
-                self.id_lower.contains(val)
-            } else if let Some(val) = part_lower.strip_prefix("i:") {
-                self.id_lower.contains(val)
-            } else if let Some(val) = part_lower.strip_prefix("type:") {
-                self.type_lower.contains(val)
-            } else if let Some(val) = part_lower.strip_prefix("t:") {
-                self.type_lower.contains(val)
-            } else if let Some(val) = part_lower.strip_prefix("category:") {
-                self.category_lower.contains(val)
-            } else if let Some(val) = part_lower.strip_prefix("c:") {
-                self.category_lower.contains(val)
-            } else {
-                self.id_lower.contains(&part_lower)
-                    || self.type_lower.contains(&part_lower)
-                    || self.abstract_lower.contains(&part_lower)
-                    || self.category_lower.contains(&part_lower)
-            };
-
-            if !match_found {
-                return false;
-            }
-        }
-        true
-    }
-}
-
 /// Application state stored in Cursive's user data.
-/// Contains all items and the current filtered subset.
+/// Contains indexed items, search index, and current filtered subset.
 struct AppState {
-    /// All loaded items from the JSON file
-    all_items: Vec<CbnItem>,
-    /// Indices into all_items that match the current filter
+    /// All loaded items in indexed format (json, id, type)
+    indexed_items: Vec<(Value, String, String)>,
+    /// Search index for fast lookups
+    search_index: search_index::SearchIndex,
+    /// Indices into indexed_items that match the current filter
     filtered_indices: Vec<usize>,
+    /// Track search version for debouncing
+    search_version: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 fn main() -> Result<()> {
@@ -189,16 +71,13 @@ fn main() -> Result<()> {
         let builds_path = cache_dir.join("builds.json");
 
         let mut should_download = args.force || !builds_path.exists();
-        if !should_download {
-            if let Ok(metadata) = fs::metadata(&builds_path) {
-                if let Ok(modified) = metadata.modified() {
-                    if let Ok(elapsed) = modified.elapsed() {
-                        if elapsed.as_secs() > 3600 {
-                            should_download = true;
-                        }
-                    }
-                }
-            }
+        if !should_download
+            && let Ok(metadata) = fs::metadata(&builds_path)
+            && let Ok(modified) = metadata.modified()
+            && let Ok(elapsed) = modified.elapsed()
+            && elapsed.as_secs() > 3600
+        {
+            should_download = true;
         }
 
         let content = if should_download {
@@ -238,24 +117,20 @@ fn main() -> Result<()> {
         let target_path = version_cache_dir.join("all.json");
 
         let mut should_download = args.force || !target_path.exists();
-        if !should_download {
-            let expiration = match game_version.as_str() {
-                "nightly" => Some(std::time::Duration::from_secs(12 * 3600)),
-                "stable" => Some(std::time::Duration::from_secs(30 * 24 * 3600)),
-                _ => None,
-            };
+        let expiration = match game_version.as_str() {
+            "nightly" => Some(std::time::Duration::from_secs(12 * 3600)),
+            "stable" => Some(std::time::Duration::from_secs(30 * 24 * 3600)),
+            _ => None,
+        };
 
-            if let Some(exp) = expiration {
-                if let Ok(metadata) = fs::metadata(&target_path) {
-                    if let Ok(modified) = metadata.modified() {
-                        if let Ok(elapsed) = modified.elapsed() {
-                            if elapsed > exp {
-                                should_download = true;
-                            }
-                        }
-                    }
-                }
-            }
+        if !should_download
+            && let Some(exp) = expiration
+            && let Ok(metadata) = fs::metadata(&target_path)
+            && let Ok(modified) = metadata.modified()
+            && let Ok(elapsed) = modified.elapsed()
+            && elapsed > exp
+        {
+            should_download = true;
         }
 
         if should_download {
@@ -292,22 +167,49 @@ fn main() -> Result<()> {
     let file = fs::File::open(&file_path)?;
     let reader = std::io::BufReader::new(file);
     let root: Root = serde_json::from_reader(reader)?;
-    let mut items: Vec<CbnItem> = root.data.into_iter().map(CbnItem::from_json).collect();
 
-    // Sort items by type then id
-    items.sort_by(|a, b| a.type_.cmp(&b.type_).then_with(|| a.id.cmp(&b.id)));
+    println!("Building search index for {} items...", root.data.len());
+    let start = std::time::Instant::now();
+
+    // Convert to indexed format (json, id, type)
+    let mut indexed_items: Vec<(Value, String, String)> = root
+        .data
+        .into_iter()
+        .map(|v| {
+            let id = v
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let type_ = v
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            (v, id, type_)
+        })
+        .collect();
+
+    // Sort by type then id
+    indexed_items.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)));
+
+    // Build search index
+    let search_index = search_index::SearchIndex::build(&indexed_items);
+    let index_time = start.elapsed();
+    println!("Index built in {:.2}ms", index_time.as_secs_f64() * 1000.0);
 
     // Create Cursive app
     let mut siv = cursive::default();
     siv.set_theme(solarized_dark());
 
-    // Initialize state
-    let filtered_indices: Vec<usize> = (0..items.len()).collect();
-    let state = AppState {
-        all_items: items,
+    // Initialize state with index
+    let filtered_indices: Vec<usize> = (0..indexed_items.len()).collect();
+    siv.set_user_data(AppState {
+        indexed_items,
+        search_index,
         filtered_indices,
-    };
-    siv.set_user_data(state);
+        search_version: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    });
 
     // Build UI
     build_ui(&mut siv);
@@ -384,13 +286,13 @@ fn on_item_select(siv: &mut Cursive, item_idx: &usize) {
 /// Updates the details pane with the JSON for the specified item index.
 fn update_details_for_item(siv: &mut Cursive, item_idx: usize) {
     let state = siv.user_data::<AppState>().unwrap();
-    if let Some(item) = state.all_items.get(item_idx) {
-        if let Ok(json_str) = serde_json::to_string_pretty(&item.original_json) {
-            let highlighted = highlight_json(&json_str);
-            siv.call_on_name("details", |view: &mut ScrollView<TextView>| {
-                view.get_inner_mut().set_content(highlighted);
-            });
-        }
+    if let Some((json, _, _)) = state.indexed_items.get(item_idx)
+        && let Ok(json_str) = serde_json::to_string_pretty(json)
+    {
+        let highlighted = highlight_json(&json_str);
+        siv.call_on_name("details", |view: &mut ScrollView<TextView>| {
+            view.get_inner_mut().set_content(highlighted);
+        });
     }
 }
 
@@ -409,26 +311,43 @@ fn update_details_for_selected(siv: &mut Cursive) {
 
 /// Callback triggered when user edits the filter input.
 /// Filters items based on the query and repopulates the list.
+/// Implements 150ms debouncing to keep UI responsive.
 fn on_filter_edit(siv: &mut Cursive, query: &str, _cursor: usize) {
-    // Update filtered indices
-    let new_filtered: Vec<usize> = {
-        let state = siv.user_data::<AppState>().unwrap();
-        state
-            .all_items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| item.matches(query))
-            .map(|(i, _)| i)
-            .collect()
-    };
+    let state = siv.user_data::<AppState>().unwrap();
+    let version = state.search_version.as_ref();
+    let current_version = version.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
 
-    // Update state
-    if let Some(state) = siv.user_data::<AppState>() {
-        state.filtered_indices = new_filtered;
-    }
+    let query_clone = query.to_string();
+    let version_clone = state.search_version.clone();
+    let cb_sink = siv.cb_sink().clone();
 
-    // Repopulate a list
-    repopulate_list(siv);
+    std::thread::spawn(move || {
+        // Wait for typing to pause
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        // Only proceed if no newer search request has started
+        if version_clone.load(std::sync::atomic::Ordering::SeqCst) == current_version {
+            cb_sink
+                .send(Box::new(move |s| {
+                    // Perform the actual search on the main thread
+                    let new_filtered = {
+                        let state = s.user_data::<AppState>().unwrap();
+                        matcher::search_with_index(
+                            &state.search_index,
+                            &state.indexed_items,
+                            &query_clone,
+                        )
+                    };
+
+                    if let Some(state) = s.user_data::<AppState>() {
+                        state.filtered_indices = new_filtered;
+                    }
+
+                    repopulate_list(s);
+                }))
+                .ok();
+        }
+    });
 }
 
 /// Returns a Cursive theme based on the Solarized Dark color palette.
@@ -483,11 +402,27 @@ fn repopulate_list(siv: &mut Cursive) {
         let data: Vec<(String, String, String)> = indices
             .iter()
             .filter_map(|&idx| {
-                state.all_items.get(idx).map(|item| {
+                state.indexed_items.get(idx).map(|(json, id, type_)| {
+                    let display_name = if !id.is_empty() {
+                        id.clone()
+                    } else if let Some(abstract_) = json.get("abstract").and_then(|v| v.as_str()) {
+                        format!("(abstract) {}", abstract_)
+                    } else if let Some(name) = json.get("name") {
+                        if let Some(name_str) = name.get("str").and_then(|v| v.as_str()) {
+                            name_str.to_string()
+                        } else if let Some(name_str) = name.as_str() {
+                            name_str.to_string()
+                        } else {
+                            "(unknown)".to_string()
+                        }
+                    } else {
+                        "(unknown)".to_string()
+                    };
+
                     (
-                        format!("[{}] {}", item.type_, item.display_name),
-                        item.type_.clone(),
-                        item.display_name.clone(),
+                        format!("[{}] {}", type_, display_name),
+                        type_.clone(),
+                        display_name,
                     )
                 })
             })
@@ -650,42 +585,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_matches() {
-        let item = CbnItem::from_json(json!({
-            "id": "test_id",
-            "type": "MONSTER",
-            "category": "creatures",
-            "name": "Test Name"
-        }));
-
-        // Generic search
-        assert!(item.matches("test"));
-        assert!(item.matches("monster"));
-        assert!(item.matches("creatures"));
-        assert!(!item.matches("food"));
-
-        // ID search
-        assert!(item.matches("id:test_id"));
-        assert!(item.matches("i:test"));
-        assert!(!item.matches("id:monster"));
-
-        // Type search
-        assert!(item.matches("type:MONSTER"));
-        assert!(item.matches("t:monster"));
-        assert!(!item.matches("t:test"));
-
-        // Category search
-        assert!(item.matches("category:creatures"));
-        assert!(item.matches("c:creatures"));
-        assert!(!item.matches("c:monster"));
-
-        // Combined search (AND logic)
-        assert!(item.matches("t:monster c:creatures"));
-        assert!(item.matches("i:test t:monster"));
-        assert!(!item.matches("i:test t:item"));
-    }
-
-    #[test]
     fn test_highlight_json() {
         let json = r#"{
   "id": "test",
@@ -711,20 +610,33 @@ mod tests {
     }
 
     #[test]
-    fn test_sorting() {
+    fn test_indexed_format_sorting() {
         let mut items = [
-            CbnItem::from_json(json!({"id": "z_id", "type": "A_TYPE"})),
-            CbnItem::from_json(json!({"id": "a_id", "type": "B_TYPE"})),
-            CbnItem::from_json(json!({"id": "a_id", "type": "A_TYPE"})),
+            (
+                json!({"id": "z_id"}),
+                "z_id".to_string(),
+                "A_TYPE".to_string(),
+            ),
+            (
+                json!({"id": "a_id"}),
+                "a_id".to_string(),
+                "B_TYPE".to_string(),
+            ),
+            (
+                json!({"id": "a_id"}),
+                "a_id".to_string(),
+                "A_TYPE".to_string(),
+            ),
         ];
 
-        items.sort_by(|a, b| a.type_.cmp(&b.type_).then_with(|| a.id.cmp(&b.id)));
+        // Sort by type then id
+        items.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)));
 
-        assert_eq!(items[0].type_, "A_TYPE");
-        assert_eq!(items[0].id, "a_id");
-        assert_eq!(items[1].type_, "A_TYPE");
-        assert_eq!(items[1].id, "z_id");
-        assert_eq!(items[2].type_, "B_TYPE");
-        assert_eq!(items[2].id, "a_id");
+        assert_eq!(items[0].2, "A_TYPE");
+        assert_eq!(items[0].1, "a_id");
+        assert_eq!(items[1].2, "A_TYPE");
+        assert_eq!(items[1].1, "z_id");
+        assert_eq!(items[2].2, "B_TYPE");
+        assert_eq!(items[2].1, "a_id");
     }
 }
