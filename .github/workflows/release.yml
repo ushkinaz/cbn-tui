@@ -22,10 +22,16 @@ jobs:
         include:
           - os: ubuntu-latest
             asset_name: cbn-tui-linux-x86_64
+            target: x86_64-unknown-linux-gnu
           - os: windows-latest
             asset_name: cbn-tui-windows-x86_64.exe
+            target: x86_64-pc-windows-msvc
           - os: macos-latest
-            asset_name: cbn-tui-macos-universal
+            asset_name: cbn-tui-macos-x86_64
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            asset_name: cbn-tui-macos-arm64
+            target: aarch64-apple-darwin
 
     steps:
       - name: Checkout repository
@@ -35,26 +41,19 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
-      - name: Build (non-macOS)
-        if: matrix.os != 'macos-latest'
-        run: cargo build --release
-
-      - name: Build (macOS Universal)
-        if: matrix.os == 'macos-latest'
-        run: |
-          rustup target add x86_64-apple-darwin aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
-          cargo build --release --target aarch64-apple-darwin
-          lipo -create -output target/release/cbn-tui target/x86_64-apple-darwin/release/cbn-tui target/aarch64-apple-darwin/release/cbn-tui
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Prepare binary
         shell: bash
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp target/release/cbn-tui.exe ${{ matrix.asset_name }}
+            cp target/${{ matrix.target }}/release/cbn-tui.exe ${{ matrix.asset_name }}
           else
-            cp target/release/cbn-tui ${{ matrix.asset_name }}
+            cp target/${{ matrix.target }}/release/cbn-tui ${{ matrix.asset_name }}
           fi
 
       - name: Create Release and Upload Assets
