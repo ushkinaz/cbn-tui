@@ -7,45 +7,39 @@ Terminal User Interface (TUI) browser for **Cataclysm: Bright Nights** JSON data
 ## ✨ Features
 
 - **Blazing Fast**: Instantly browse and search through thousands of game items, monsters, and definitions.
+- **Automatic Data Management**: Automatically download and cache game data directly.
 - **Advanced Search Syntax**: Powerful filtering with support for specific fields and combined logic:
   - `id:zombie` or `i:zombie` - Filter by ID.
   - `type:MONSTER` or `t:MONSTER` - Filter by record type.
   - `category:weapon` or `c:weapon` - Filter by category.
-  - `query1 query2` - AND logic for multiple terms.
+  - `bash.str_min:10` - Deep field search using dot-notation.
+  - `term1 term2` - Combine multiple terms (AND logic).
 - **Syntax Highlighting**: Beautifully formatted JSON details with syntax coloring for keys, strings, numbers, and booleans.
-- **Deep Navigation**: Full keyboard and mouse support for seamless browsing.
-- **Pane Management**: Switch focus between Item List, Details, and Filter bar using Tab.
+- **Seamless Navigation**: Switch focus between the item list, details pane, and search bar using standard keyboard shortcuts.
 
-## ⌨️ Desktop Controls
+## ⌨️ Controls
 
-| Key                    | Action                                       |
-|------------------------|----------------------------------------------|
-| `q` / `Esc`            | Quit Application                             |
-| `/`                    | Enter Filter Mode                            |
-| `Enter`                | Exit Filter Mode                             |
-| `Tab` / `Shift-Tab`    | Cycle Focused Pane (List / Details / Filter) |
-| `j` / `k` or `↑` / `↓` | Move selection or scroll details             |
-| `PageUp` / `PageDown`  | Scroll faster (10 items at a time)           |
-| `Click`                | Focus pane or select item                    |
+| Key                   | Action                                        |
+|-----------------------|-----------------------------------------------|
+| `q` / `Esc`           | Quit Application                              |
+| `/`                   | Focus Search Bar                              |
+| `Tab` / `Shift-Tab`   | Cycle focus between List, Details, and Search |
+| `↑` / `↓`             | Move selection or scroll                      |
+| `PageUp` / `PageDown` | Scroll faster (10 items at a time)            |
+| `Enter`               | Confirm or exit input focus                   |
 
-## 🚀 Getting Started
+## 🚀 Usage
 
-### Prerequisites
- 
-- No life
-
-### Running the Application
-
-By default, the application looks for data in `all.json`. You can specify a different file using the `--file` flag:
+### Automatic Data Download
+Launch the application and specify a game version. It will automatically download and cache the data for you:
 ```bash
-cargo run -- --file path/to/your/data.json
+cbn-tui --game nightly
 ```
 
-## 🛠️ Development
-
-- **Build**: `cargo build`
-- **Test**: `cargo test`
-- **Run with custom data**: `cargo run -- --file data/all.json`
+### Other Options
+- **List available game versions**: `cbn-tui --game-versions`
+- **Force refresh cached data**: `cbn-tui --game stable --force`
+- **Use a custom JSON file**: `cbn-tui --file path/to/your/data.json`
 
 ## 📄 License
 Distributed under the MIT License. See `LICENSE` for more information.
