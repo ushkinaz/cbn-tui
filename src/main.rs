@@ -19,7 +19,7 @@ struct Args {
     #[arg(short, long)]
     file: Option<String>,
 
-    /// Game version to download (e.g. v0.9.1, stable, nightly)
+    /// Game version to download (e.g., v0.9.1, stable, nightly)
     #[arg(short, long)]
     game: Option<String>,
 
@@ -322,9 +322,9 @@ fn build_ui(siv: &mut Cursive) {
         .on_select(on_item_select)
         .with_name("item_list");
 
-    // Initial population will be done by repopulate_list after adding layer
+    // Repopulate_list will do the initial population after adding a layer
 
-    // Create details view
+    // Create a details view
     let details = TextView::new("Select an item to view details")
         .scrollable()
         .with_name("details");
@@ -332,20 +332,20 @@ fn build_ui(siv: &mut Cursive) {
     // Create filter input
     let filter = EditView::new().on_edit(on_filter_edit).with_name("filter");
 
-    // Create main layout
+    // Create the main layout
     let main_layout = LinearLayout::horizontal()
         .child(
             Panel::new(select.scrollable())
-                .title("Items")
+                .title("Elements")
                 .fixed_width(40),
         )
-        .child(Panel::new(details).title("Details").full_width());
+        .child(Panel::new(details).title("JSON definition").full_width());
 
     let root = LinearLayout::vertical()
         .child(ResizedView::with_full_screen(main_layout))
         .child(
             Panel::new(filter)
-                .title("Filter (Press '/' to edit, Enter/Esc to stop)")
+                .title("Filter ('/' to focus)")
                 .fixed_height(3),
         );
 
@@ -354,7 +354,7 @@ fn build_ui(siv: &mut Cursive) {
     // Populate the list initially
     repopulate_list(siv);
 
-    // Set initial focus on list
+    // Set initial focus on a list
     siv.focus_name("item_list").ok();
 }
 
@@ -392,7 +392,7 @@ fn on_filter_edit(siv: &mut Cursive, query: &str, _cursor: usize) {
         state.filtered_indices = new_filtered;
     }
 
-    // Repopulate list
+    // Repopulate a list
     repopulate_list(siv);
 }
 
@@ -429,7 +429,7 @@ fn solarized_dark() -> Theme {
         palette[PaletteColor::HighlightText] = base3;
 
         // Custom borders/panels
-        // Cursive uses Yellow (for active) and White (for inactive) by default for Panel borders
+        // Cursive uses Yellow (for active) and White (for inactive) by default for Panel borders,
         // but it's better to keep it consistent with the palette.
     }
 
