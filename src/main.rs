@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use cursive::Cursive;
 use cursive::align::HAlign;
-use cursive::theme::{Color, ColorStyle, PaletteColor, Theme};
+use cursive::theme::{ColorStyle, PaletteColor};
 use cursive::traits::*;
 use cursive::utils::markup::StyledString;
 use cursive::views::{
@@ -14,6 +14,7 @@ use std::fs;
 
 mod matcher;
 mod search_index;
+mod theme;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -33,6 +34,10 @@ struct Args {
     /// List all available game versions
     #[arg(long)]
     game_versions: bool,
+
+    /// UI theme (dracula, solarized, gruvbox, everforest_light)
+    #[arg(short, long)]
+    theme: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,10 +63,23 @@ struct AppState {
     filtered_indices: Vec<usize>,
     /// Track search version for debouncing
     search_version: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Highlighting style for JSON
+    json_style: theme::JsonStyle,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Early theme validation
+    if let Some(theme) = &args.theme {
+        match theme.as_str() {
+            "dracula" | "solarized" | "gruvbox" | "everforest_light" => (),
+            _ => anyhow::bail!(
+                "Unknown theme: {}. Available: dracula, solarized, gruvbox, everforest_light",
+                theme
+            ),
+        }
+    }
 
     if args.game_versions {
         let project_dirs = directories::ProjectDirs::from("com", "cataclysmbn", "cbn-tui")
@@ -200,7 +218,17 @@ fn main() -> Result<()> {
 
     // Create Cursive app
     let mut siv = cursive::default();
-    siv.set_theme(solarized_dark());
+
+    // Choose theme
+    let theme_name = args.theme.as_deref().unwrap_or("dracula");
+    let (theme, json_style) = match theme_name {
+        "dracula" => theme::dracula_theme(),
+        "solarized" => theme::solarized_dark(),
+        "gruvbox" => theme::gruvbox_theme(),
+        "everforest_light" => theme::everforest_light_theme(),
+        _ => anyhow::bail!("Unknown theme: {}. Available: dracula, solarized, gruvbox, everforest_light", theme_name),
+    };
+    siv.set_theme(theme);
 
     // Initialize state with index
     let filtered_indices: Vec<usize> = (0..indexed_items.len()).collect();
@@ -209,6 +237,7 @@ fn main() -> Result<()> {
         search_index,
         filtered_indices,
         search_version: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        json_style,
     });
 
     // Build UI
@@ -286,10 +315,11 @@ fn on_item_select(siv: &mut Cursive, item_idx: &usize) {
 /// Updates the details pane with the JSON for the specified item index.
 fn update_details_for_item(siv: &mut Cursive, item_idx: usize) {
     let state = siv.user_data::<AppState>().unwrap();
+    let json_style = state.json_style;
     if let Some((json, _, _)) = state.indexed_items.get(item_idx)
         && let Ok(json_str) = serde_json::to_string_pretty(json)
     {
-        let highlighted = highlight_json(&json_str);
+        let highlighted = highlight_json(&json_str, &json_style);
         siv.call_on_name("details", |view: &mut ScrollView<TextView>| {
             view.get_inner_mut().set_content(highlighted);
         });
@@ -350,49 +380,6 @@ fn on_filter_edit(siv: &mut Cursive, query: &str, _cursor: usize) {
     });
 }
 
-/// Returns a Cursive theme based on the Solarized Dark color palette.
-fn solarized_dark() -> Theme {
-    let mut theme = Theme::default();
-
-    // Solarized Dark palette
-    let base03 = Color::Rgb(0, 43, 54);
-    let base02 = Color::Rgb(7, 54, 66);
-    let base01 = Color::Rgb(88, 110, 117);
-    let base00 = Color::Rgb(101, 123, 131);
-    let base0 = Color::Rgb(131, 148, 150);
-    let base3 = Color::Rgb(253, 246, 227);
-    let yellow = Color::Rgb(181, 137, 0);
-    let blue = Color::Rgb(38, 139, 210);
-
-    {
-        let palette = &mut theme.palette;
-
-        palette[PaletteColor::Background] = base03;
-        palette[PaletteColor::View] = base02;
-        palette[PaletteColor::Shadow] = Color::Rgb(0, 0, 0); // Pure black for shadows
-
-        palette[PaletteColor::Primary] = base0;
-        palette[PaletteColor::Secondary] = base01;
-        palette[PaletteColor::Tertiary] = base00;
-
-        palette[PaletteColor::TitlePrimary] = blue;
-        palette[PaletteColor::TitleSecondary] = yellow;
-
-        palette[PaletteColor::Highlight] = blue;
-        palette[PaletteColor::HighlightInactive] = base01;
-        palette[PaletteColor::HighlightText] = base3;
-
-        // Custom borders/panels
-        // Cursive uses Yellow (for active) and White (for inactive) by default for Panel borders,
-        // but it's better to keep it consistent with the palette.
-    }
-
-    // Border style
-    theme.borders = cursive::theme::BorderStyle::Simple;
-
-    theme
-}
-
 /// Helper function to repopulate the item list from the current filtered indices.
 /// Clears and rebuilds the SelectView with filtered items.
 fn repopulate_list(siv: &mut Cursive) {
@@ -447,7 +434,7 @@ fn repopulate_list(siv: &mut Cursive) {
 }
 
 /// Applies syntax highlighting to JSON text using theme-consistent colors.
-fn highlight_json(json: &str) -> StyledString {
+fn highlight_json(json: &str, style: &theme::JsonStyle) -> StyledString {
     let mut result = StyledString::new();
 
     // Use palette roles for the foundation styles
@@ -456,10 +443,10 @@ fn highlight_json(json: &str) -> StyledString {
     let style_key = ColorStyle::new(PaletteColor::TitlePrimary, PaletteColor::View);
     let style_punct = ColorStyle::new(PaletteColor::Secondary, PaletteColor::View);
 
-    // Accent colors for values (Solarized palette accents)
-    let col_string = Color::Rgb(133, 153, 0); // Green
-    let col_num = Color::Rgb(211, 54, 130); // Magenta
-    let col_bool = Color::Rgb(220, 50, 47); // Red
+    // Accent colors for values from the provided style
+    let col_string = style.string;
+    let col_num = style.number;
+    let col_bool = style.boolean;
 
     for line in json.lines() {
         let mut remaining = line;
@@ -582,6 +569,7 @@ fn highlight_json(json: &str) -> StyledString {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cursive::theme::Color;
     use serde_json::json;
 
     #[test]
@@ -594,7 +582,12 @@ mod tests {
     "key": "value"
   }
 }"#;
-        let highlighted = highlight_json(json);
+        let style = theme::JsonStyle {
+            string: Color::Rgb(0, 255, 0),
+            number: Color::Rgb(0, 0, 255),
+            boolean: Color::Rgb(255, 0, 0),
+        };
+        let highlighted = highlight_json(json, &style);
 
         // Basic check that we have content - source() returns the underlying text
         let source = highlighted.source();
