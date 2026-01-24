@@ -12,9 +12,9 @@ Repository Layout
 
 Build, Run, Lint, Test
 - Build: `cargo build`
-- Run with a default file: `cargo run`
+- Run with nightly (default): `cargo run`
+- Run with stable: `cargo run -- --game stable`
 - Run with a custom file: `cargo run -- --file /path/to/all.json`
-- Run with download: `cargo run -- --game nightly`
 - List versions: `cargo run -- --game-versions`
 - Test all: `cargo test`
 - Single test: `cargo test test_matches`
