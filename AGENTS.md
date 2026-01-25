@@ -136,6 +136,7 @@ Agent Expectations
 - Preserve existing UI patterns and theme choices.
 - Do not edit cached downloads under OS cache directories.
 - Avoid running heavy commands on `all.json` without `jq` filters.
+- Always use the Context7 MCP tool to look up external library documentation before implementing functionality that relies on those libraries.
 
 Commit Message Rules
 - All commits follow Conventional Commits.
