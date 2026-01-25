@@ -21,7 +21,7 @@ use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Stylize,
+    style::Modifier,
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
@@ -600,11 +600,20 @@ fn render_filter(f: &mut Frame, app: &AppState, area: Rect) {
         } else {
             app.theme.border
         })
-        .title("Filter ('/' to focus)")
+        .title("Filter")
         .title_style(app.theme.title);
 
     let inner = block.inner(area);
-    let paragraph = Paragraph::new(app.filter_text.as_str())
+    let content = if app.filter_text.is_empty() && !app.filter_focused {
+        Text::from(Line::from(Span::styled(
+            "Press '/' to focus...",
+            app.theme.text.add_modifier(Modifier::DIM),
+        )))
+    } else {
+        Text::from(app.filter_text.as_str())
+    };
+
+    let paragraph = Paragraph::new(content)
         .block(block)
         .style(app.theme.text);
 
@@ -684,7 +693,6 @@ fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
                             format!("\"{}\"", quoted),
                             ratatui::style::Style::default()
                                 .fg(ratatui::style::Color::Cyan)
-                                .bold(),
                         )
                     } else {
                         Span::styled(
