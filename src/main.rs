@@ -58,6 +58,7 @@ struct Args {
     theme: Option<String>,
 }
 
+// GameBuild, Root, and other non-ui structs...
 #[derive(Debug, Deserialize)]
 struct Root {
     data: Vec<Value>,
@@ -70,7 +71,16 @@ struct GameBuild {
     created_at: String,
 }
 
-/// Application state for ratatui app.
+/// Current input mode for the application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    /// Normal navigation mode
+    Normal,
+    /// Mode for entering filter text
+    Filtering,
+}
+
+/// Application state for the Ratatui app.
 struct AppState {
     /// All loaded items in indexed format (json, id, type)
     indexed_items: Vec<(Value, String, String)>,
@@ -84,8 +94,8 @@ struct AppState {
     filter_text: String,
     /// Cursor position in filter
     filter_cursor: usize,
-    /// Whether filter input has focus
-    filter_focused: bool,
+    /// Current input mode
+    input_mode: InputMode,
     /// Theme configuration
     theme: theme::ThemeConfig,
     /// Scroll offset for details pane
@@ -115,7 +125,7 @@ impl AppState {
             list_state,
             filter_text: String::new(),
             filter_cursor: 0,
-            filter_focused: false,
+            input_mode: InputMode::Normal,
             theme,
             details_scroll: 0,
             should_quit: false,
@@ -196,7 +206,7 @@ impl AppState {
         let new_filtered =
             matcher::search_with_index(&self.search_index, &self.indexed_items, &self.filter_text);
         self.filtered_indices = new_filtered;
-        // Reset selection to first item
+        // Reset selection to the first item
         if self.filtered_indices.is_empty() {
             self.list_state.select(None);
         } else {
@@ -321,7 +331,7 @@ fn main() -> Result<()> {
         }
     }
     let file = fs::File::open(&file_path)?;
-    let reader = std::io::BufReader::new(file);
+    let reader = io::BufReader::new(file);
     let root: Root = serde_json::from_reader(reader)?;
 
     println!("Building search index for {} items...", root.data.len());
@@ -425,83 +435,105 @@ where
 }
 
 fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) {
-    match code {
-        KeyCode::Char('q') | KeyCode::Esc if !app.filter_focused => {
-            app.should_quit = true;
+    const PAGE_SCROLL_LINES: usize = 10;
+
+    fn clamp_selection(app: &mut AppState) {
+        // Clamp selection to valid indices when list shrinks/filters change.
+        let len = app.filtered_indices.len();
+        if len == 0 {
+            app.list_state.select(None);
+            return;
         }
-        KeyCode::Char('/') if !app.filter_focused => {
-            app.filter_focused = true;
+
+        if let Some(selected) = app.list_state.selected()
+            && selected >= len
+        {
+            app.list_state.select(Some(len - 1));
         }
-        KeyCode::Esc if app.filter_focused => {
-            app.filter_focused = false;
-        }
-        KeyCode::Enter if app.filter_focused => {
-            app.filter_focused = false;
-        }
-        KeyCode::Up if !app.filter_focused => {
+    }
+
+    fn move_selection(app: &mut AppState, direction: i32) {
+        if direction < 0 {
             app.list_state.select_previous();
-            // Clamp to valid indices
-            if let Some(selected) = app.list_state.selected()
-                && selected >= app.filtered_indices.len()
-                && !app.filtered_indices.is_empty()
-            {
-                app.list_state.select(Some(app.filtered_indices.len() - 1));
-            }
-            app.details_scroll = 0;
-        }
-        KeyCode::Down if !app.filter_focused => {
+        } else {
             app.list_state.select_next();
-            // Clamp to valid indices
-            if let Some(selected) = app.list_state.selected()
-                && selected >= app.filtered_indices.len()
-                && !app.filtered_indices.is_empty()
-            {
-                app.list_state.select(Some(app.filtered_indices.len() - 1));
-            }
-            app.details_scroll = 0;
         }
-        KeyCode::PageUp if !app.filter_focused => {
-            for _ in 0..10 {
+        clamp_selection(app);
+        app.details_scroll = 0;
+    }
+
+    fn apply_filter_edit(app: &mut AppState, edit: impl FnOnce(&mut AppState)) {
+        edit(app);
+        app.update_filter();
+    }
+
+    match app.input_mode {
+        InputMode::Normal => match code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                app.should_quit = true;
+            }
+
+            KeyCode::Char('/') => {
+                app.input_mode = InputMode::Filtering;
+            }
+
+            KeyCode::Up | KeyCode::Char('k') if !modifiers.contains(KeyModifiers::CONTROL) => {
+                move_selection(app, -1);
+            }
+            KeyCode::Down | KeyCode::Char('j') if !modifiers.contains(KeyModifiers::CONTROL) => {
+                move_selection(app, 1);
+            }
+
+            KeyCode::PageUp => {
+                for _ in 0..PAGE_SCROLL_LINES {
+                    app.scroll_details_up();
+                }
+            }
+            KeyCode::PageDown => {
+                for _ in 0..PAGE_SCROLL_LINES {
+                    app.scroll_details_down();
+                }
+            }
+
+            KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
                 app.scroll_details_up();
             }
-        }
-        KeyCode::PageDown if !app.filter_focused => {
-            for _ in 0..10 {
+            KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
                 app.scroll_details_down();
             }
-        }
-        KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) && !app.filter_focused => {
-            app.scroll_details_up();
-        }
-        KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) && !app.filter_focused => {
-            app.scroll_details_down();
-        }
-        // Filter input handling
-        KeyCode::Char(c) if app.filter_focused => {
-            app.filter_add_char(c);
-            app.update_filter();
-        }
-        KeyCode::Backspace if app.filter_focused => {
-            app.filter_backspace();
-            app.update_filter();
-        }
-        KeyCode::Delete if app.filter_focused => {
-            app.filter_delete();
-            app.update_filter();
-        }
-        KeyCode::Left if app.filter_focused => {
-            app.filter_move_cursor_left();
-        }
-        KeyCode::Right if app.filter_focused => {
-            app.filter_move_cursor_right();
-        }
-        KeyCode::Home if app.filter_focused => {
-            app.filter_move_to_start();
-        }
-        KeyCode::End if app.filter_focused => {
-            app.filter_move_to_end();
-        }
-        _ => {}
+
+            _ => {}
+        },
+        InputMode::Filtering => match code {
+            KeyCode::Esc | KeyCode::Enter => {
+                app.input_mode = InputMode::Normal;
+            }
+
+            KeyCode::Char(c) => {
+                apply_filter_edit(app, |app| app.filter_add_char(c));
+            }
+            KeyCode::Backspace => {
+                apply_filter_edit(app, AppState::filter_backspace);
+            }
+            KeyCode::Delete => {
+                apply_filter_edit(app, AppState::filter_delete);
+            }
+
+            KeyCode::Left => {
+                app.filter_move_cursor_left();
+            }
+            KeyCode::Right => {
+                app.filter_move_cursor_right();
+            }
+            KeyCode::Home => {
+                app.filter_move_to_start();
+            }
+            KeyCode::End => {
+                app.filter_move_to_end();
+            }
+
+            _ => {}
+        },
     }
 }
 
@@ -590,7 +622,7 @@ fn render_details(f: &mut Frame, app: &AppState, area: Rect) {
         )
         .style(app.theme.text)
         .wrap(Wrap { trim: false })
-        .scroll(((app.details_scroll.min(u16::MAX as usize)) as u16, 0));
+        .scroll((app.details_scroll.min(u16::MAX as usize) as u16, 0));
 
     f.render_widget(paragraph, area);
 }
@@ -598,7 +630,7 @@ fn render_details(f: &mut Frame, app: &AppState, area: Rect) {
 fn render_filter(f: &mut Frame, app: &AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(if app.filter_focused {
+        .border_style(if app.input_mode == InputMode::Filtering {
             app.theme.border_selected
         } else {
             app.theme.border
@@ -607,7 +639,7 @@ fn render_filter(f: &mut Frame, app: &AppState, area: Rect) {
         .title_style(app.theme.title);
 
     let inner = block.inner(area);
-    let content = if app.filter_text.is_empty() && !app.filter_focused {
+    let content = if app.filter_text.is_empty() && app.input_mode != InputMode::Filtering {
         Text::from(Line::from(Span::styled(
             "Press '/' to focus...",
             app.theme.text.add_modifier(Modifier::DIM),
@@ -616,20 +648,16 @@ fn render_filter(f: &mut Frame, app: &AppState, area: Rect) {
         Text::from(app.filter_text.as_str())
     };
 
-    let paragraph = Paragraph::new(content)
-        .block(block)
-        .style(app.theme.text);
+    let paragraph = Paragraph::new(content).block(block).style(app.theme.text);
 
     f.render_widget(paragraph, area);
 
-    if app.filter_focused {
-        if inner.width > 0 && inner.height > 0 {
-            let cursor_offset = filter_cursor_offset(&app.filter_text, app.filter_cursor);
-            let max_x = inner.width.saturating_sub(1);
-            let cursor_x = inner.x + cursor_offset.min(max_x);
-            let cursor_y = inner.y;
-            f.set_cursor_position((cursor_x, cursor_y));
-        }
+    if app.input_mode == InputMode::Filtering && inner.width > 0 && inner.height > 0 {
+        let cursor_offset = filter_cursor_offset(&app.filter_text, app.filter_cursor);
+        let max_x = inner.width.saturating_sub(1);
+        let cursor_x = inner.x + cursor_offset.min(max_x);
+        let cursor_y = inner.y;
+        f.set_cursor_position((cursor_x, cursor_y));
     }
 }
 
@@ -653,7 +681,7 @@ fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
                 }
 
                 if is_escaped {
-                    // This quote is escaped, treat it as normal text and continue searching
+                    // This quote is escaped, treat it as a normal text and continue searching
                     let prefix = &remaining[..pos + 1];
                     if !prefix.is_empty() {
                         spans.push(Span::raw(prefix.to_string()));
@@ -669,7 +697,7 @@ fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
                 }
 
                 let rest = &remaining[pos + 1..];
-                // Find next UNESCAPED quote
+                // Find the next UNESCAPED quote
                 let mut end_pos = None;
                 let mut search_idx = 0;
                 while let Some(q_pos) = rest[search_idx..].find('"') {
@@ -695,7 +723,8 @@ fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
                         Span::styled(
                             format!("\"{}\"", quoted),
                             Style::default()
-                                .fg(json_style.key).add_modifier(Modifier::BOLD)
+                                .fg(json_style.key)
+                                .add_modifier(Modifier::BOLD),
                         )
                     } else {
                         Span::styled(
@@ -737,19 +766,13 @@ fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
                     let rest = &trimmed[token_end..];
 
                     let styled = if token == "true" || token == "false" || token == "null" {
-                        Span::styled(
-                            token.to_string(),
-                            Style::default().fg(json_style.boolean),
-                        )
+                        Span::styled(token.to_string(), Style::default().fg(json_style.boolean))
                     } else if (token.chars().all(|c| {
                         c.is_numeric() || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+'
                     })) && !token.is_empty()
                         && token.chars().any(|c| c.is_numeric())
                     {
-                        Span::styled(
-                            token.to_string(),
-                            Style::default().fg(json_style.number),
-                        )
+                        Span::styled(token.to_string(), Style::default().fg(json_style.number))
                     } else {
                         Span::raw(token.to_string())
                     };
@@ -856,5 +879,72 @@ mod tests {
         assert_eq!(items[1].1, "z_id");
         assert_eq!(items[2].2, "B_TYPE");
         assert_eq!(items[2].1, "a_id");
+    }
+
+    #[test]
+    fn test_handle_key_event_navigation() {
+        let items = vec![
+            (json!({"id": "a"}), "a".to_string(), "t".to_string()),
+            (json!({"id": "b"}), "b".to_string(), "t".to_string()),
+        ];
+        let search_index = search_index::SearchIndex::build(&items);
+        let theme = theme::dracula_theme();
+        let mut app = AppState::new(items, search_index, theme);
+
+        // Initial state
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.list_state.selected(), Some(0));
+
+        // Move down
+        handle_key_event(&mut app, KeyCode::Down, KeyModifiers::empty());
+        assert_eq!(app.list_state.selected(), Some(1));
+
+        // Move up
+        handle_key_event(&mut app, KeyCode::Up, KeyModifiers::empty());
+        assert_eq!(app.list_state.selected(), Some(0));
+
+        // Test vim mode (down)
+        handle_key_event(&mut app, KeyCode::Char('j'), KeyModifiers::empty());
+        assert_eq!(app.list_state.selected(), Some(1));
+
+        // Test vim mode (up)
+        handle_key_event(&mut app, KeyCode::Char('k'), KeyModifiers::empty());
+        assert_eq!(app.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_handle_key_event_filtering() {
+        let items = vec![
+            (json!({"id": "apple"}), "apple".to_string(), "t".to_string()),
+            (
+                json!({"id": "banana"}),
+                "banana".to_string(),
+                "t".to_string(),
+            ),
+        ];
+        let search_index = search_index::SearchIndex::build(&items);
+        let theme = theme::dracula_theme();
+        let mut app = AppState::new(items, search_index, theme);
+
+        // Switch to the filtering mode
+        handle_key_event(&mut app, KeyCode::Char('/'), KeyModifiers::empty());
+        assert_eq!(app.input_mode, InputMode::Filtering);
+
+        // Type 'apple'
+        for c in "apple".chars() {
+            handle_key_event(&mut app, KeyCode::Char(c), KeyModifiers::empty());
+        }
+        assert_eq!(app.filter_text, "apple");
+        assert_eq!(app.filtered_indices.len(), 1);
+
+        // Backspace
+        handle_key_event(&mut app, KeyCode::Backspace, KeyModifiers::empty());
+        assert_eq!(app.filter_text, "appl");
+        // 'appl' still matches 'apple'
+        assert_eq!(app.filtered_indices.len(), 1);
+
+        // Exit filtering mode with Esc
+        handle_key_event(&mut app, KeyCode::Esc, KeyModifiers::empty());
+        assert_eq!(app.input_mode, InputMode::Normal);
     }
 }
