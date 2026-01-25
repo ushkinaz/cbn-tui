@@ -21,7 +21,7 @@ use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Modifier,
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
@@ -694,13 +694,13 @@ fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
                     let styled = if is_key {
                         Span::styled(
                             format!("\"{}\"", quoted),
-                            ratatui::style::Style::default()
-                                .fg(ratatui::style::Color::Cyan)
+                            Style::default()
+                                .fg(json_style.key).add_modifier(Modifier::BOLD)
                         )
                     } else {
                         Span::styled(
                             format!("\"{}\"", quoted),
-                            ratatui::style::Style::default().fg(json_style.string),
+                            Style::default().fg(json_style.string),
                         )
                     };
 
@@ -709,7 +709,7 @@ fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
                 } else {
                     spans.push(Span::styled(
                         remaining.to_string(),
-                        ratatui::style::Style::default().fg(json_style.string),
+                        Style::default().fg(json_style.string),
                     ));
                     remaining = "";
                 }
@@ -739,7 +739,7 @@ fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
                     let styled = if token == "true" || token == "false" || token == "null" {
                         Span::styled(
                             token.to_string(),
-                            ratatui::style::Style::default().fg(json_style.boolean),
+                            Style::default().fg(json_style.boolean),
                         )
                     } else if (token.chars().all(|c| {
                         c.is_numeric() || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+'
@@ -748,7 +748,7 @@ fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
                     {
                         Span::styled(
                             token.to_string(),
-                            ratatui::style::Style::default().fg(json_style.number),
+                            Style::default().fg(json_style.number),
                         )
                     } else {
                         Span::raw(token.to_string())
@@ -790,6 +790,7 @@ mod tests {
   }
 }"#;
         let json_style = theme::JsonStyle {
+            key: Color::Rgb(0, 255, 255),
             string: Color::Rgb(0, 255, 0),
             number: Color::Rgb(0, 0, 255),
             boolean: Color::Rgb(255, 0, 0),

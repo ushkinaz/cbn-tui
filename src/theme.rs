@@ -3,6 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 /// Style for JSON highlighting
 #[derive(Clone, Copy)]
 pub struct JsonStyle {
+    pub key: Color,
     pub string: Color,
     pub number: Color,
     pub boolean: Color,
@@ -32,12 +33,18 @@ pub fn solarized_dark() -> ThemeConfig {
     let base0 = Color::Rgb(131, 148, 150);
     let base3 = Color::Rgb(253, 246, 227);
     let yellow = Color::Rgb(181, 137, 0);
+    let orange = Color::Rgb(203, 75, 22);
+    let red = Color::Rgb(220, 50, 47);
+    let magenta = Color::Rgb(211, 54, 130);
     let blue = Color::Rgb(38, 139, 210);
+    let cyan = Color::Rgb(42, 161, 152);
+    let green = Color::Rgb(133, 153, 0);
 
     let json_style = JsonStyle {
-        string: Color::Rgb(133, 153, 0),  // Green
-        number: Color::Rgb(211, 54, 130), // Magenta
-        boolean: Color::Rgb(220, 50, 47), // Red
+        key: cyan,
+        string: green,
+        number: magenta,
+        boolean: red,
     };
 
     ThemeConfig {
@@ -67,8 +74,10 @@ pub fn dracula_theme() -> ThemeConfig {
     let yellow = Color::Rgb(241, 250, 140);
     let orange = Color::Rgb(255, 184, 108);
     let pink = Color::Rgb(255, 121, 198);
+    let cyan = Color::Rgb(139, 233, 253);
 
     let json_style = JsonStyle {
+        key: cyan,
         string: yellow,
         number: orange,
         boolean: pink,
@@ -94,18 +103,17 @@ pub fn dracula_theme() -> ThemeConfig {
 pub fn gruvbox_theme() -> ThemeConfig {
     // Gruvbox Dark palette
     let bg0 = Color::Rgb(40, 40, 40);
-    let bg1 = Color::Rgb(50, 48, 47);
-    let bg2 = Color::Rgb(60, 56, 54);
+    let bg1 = Color::Rgb(60, 56, 54); // bg2
     let fg0 = Color::Rgb(251, 241, 199);
     let fg1 = Color::Rgb(235, 219, 178);
     let gray = Color::Rgb(146, 131, 116);
     let blue = Color::Rgb(69, 133, 136);
-    let green = Color::Rgb(184, 187, 38);
-    let orange = Color::Rgb(254, 128, 25);
-    let purple = Color::Rgb(211, 134, 155);
-    let yellow = Color::Rgb(250, 189, 47);
+    let green = Color::Rgb(152, 151, 26);
+    let orange = Color::Rgb(214, 93, 14);
+    let purple = Color::Rgb(177, 98, 134);
 
     let json_style = JsonStyle {
+        key: blue,
         string: green,
         number: purple,
         boolean: orange,
@@ -113,15 +121,15 @@ pub fn gruvbox_theme() -> ThemeConfig {
 
     ThemeConfig {
         background: bg0,
-        list_normal: Style::default().fg(fg1).bg(bg1),
+        list_normal: Style::default().fg(fg1).bg(bg0),
         list_selected: Style::default()
-            .fg(fg0)
-            .bg(blue)
+            .fg(bg0)
+            .bg(fg1)
             .add_modifier(Modifier::BOLD),
         border: Style::default().fg(gray),
         border_selected: Style::default().fg(orange),
         title: Style::default().fg(orange).add_modifier(Modifier::BOLD),
-        text: Style::default().fg(fg1).bg(bg1),
+        text: Style::default().fg(fg1).bg(bg0),
         json_style,
     }
 }
@@ -136,13 +144,15 @@ pub fn everforest_light_theme() -> ThemeConfig {
     let gray = Color::Rgb(147, 159, 149);
     let yellow = Color::Rgb(223, 160, 0);
     let green = Color::Rgb(141, 161, 1);
-    let red = Color::Rgb(230, 126, 128);
-    let purple = Color::Rgb(214, 153, 182);
+    let red = Color::Rgb(248, 85, 82);
+    let blue = Color::Rgb(58, 148, 197);
+    let magenta = Color::Rgb(223, 105, 186);
 
     let json_style = JsonStyle {
+        key: blue,
         string: green,
         number: red,
-        boolean: purple,
+        boolean: magenta,
     };
 
     ThemeConfig {
