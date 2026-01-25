@@ -1,4 +1,49 @@
 use ratatui::style::{Color, Modifier, Style};
+use std::str::FromStr;
+
+/// Available theme options for the TUI
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Theme {
+    Dracula,
+    Solarized,
+    Gruvbox,
+    EverforestLight,
+}
+
+impl Theme {
+    /// Returns the complete theme configuration for this theme.
+    pub fn config(&self) -> ThemeConfig {
+        match self {
+            Self::Dracula => dracula_theme(),
+            Self::Solarized => solarized_dark(),
+            Self::Gruvbox => gruvbox_theme(),
+            Self::EverforestLight => everforest_light_theme(),
+        }
+    }
+
+    /// Returns a list of all available theme names as strings.
+    pub fn variants() -> &'static [&'static str] {
+        &["dracula", "solarized", "gruvbox", "everforest_light"]
+    }
+}
+
+impl FromStr for Theme {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "dracula" => Ok(Self::Dracula),
+            "solarized" => Ok(Self::Solarized),
+            "gruvbox" => Ok(Self::Gruvbox),
+            "everforest_light" => Ok(Self::EverforestLight),
+            _ => Err(format!(
+                "Unknown theme: {}. Available: {}",
+                s,
+                Self::variants().join(", ")
+            )),
+        }
+    }
+}
 
 /// Style for JSON highlighting
 #[derive(Clone, Copy)]

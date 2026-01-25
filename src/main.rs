@@ -20,7 +20,7 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect, Size},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
@@ -29,6 +29,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::fs;
 use std::io;
+use std::str::FromStr;
+use tui_scrollview::{ScrollView, ScrollViewState, ScrollbarVisibility};
 
 mod matcher;
 mod search_index;
@@ -98,8 +100,12 @@ struct AppState {
     input_mode: InputMode,
     /// Theme configuration
     theme: theme::ThemeConfig,
-    /// Scroll offset for details pane
-    details_scroll: usize,
+    /// Scroll state for details pane
+    details_scroll_state: ScrollViewState,
+    /// Cached highlighted JSON text for the current selection
+    details_text: Text<'static>,
+    /// Number of lines in the current details_text
+    details_line_count: usize,
     /// Flag to quit app
     should_quit: bool,
 }
@@ -118,7 +124,7 @@ impl AppState {
             list_state.select(Some(0));
         }
 
-        Self {
+        let mut app = Self {
             indexed_items,
             search_index,
             filtered_indices,
@@ -127,9 +133,57 @@ impl AppState {
             filter_cursor: 0,
             input_mode: InputMode::Normal,
             theme,
-            details_scroll: 0,
+            details_scroll_state: ScrollViewState::default(),
+            details_text: Text::default(),
+            details_line_count: 0,
             should_quit: false,
+        };
+        app.refresh_details();
+        app
+    }
+
+    fn refresh_details(&mut self) {
+        if let Some((json, _, _)) = self.get_selected_item() {
+            match serde_json::to_string_pretty(json) {
+                Ok(json_str) => {
+                    self.details_text = highlight_json(&json_str, &self.theme.json_style);
+                    self.details_line_count = self.details_text.lines.len();
+                }
+                Err(_) => {
+                    self.details_text = Text::from("Error formatting JSON");
+                    self.details_line_count = 1;
+                }
+            }
+        } else {
+            self.details_text = Text::from("Select an item to view details");
+            self.details_line_count = 1;
         }
+        self.details_scroll_state = ScrollViewState::default();
+    }
+
+    /// Clamps the current list selection to valid bounds.
+    fn clamp_selection(&mut self) {
+        let len = self.filtered_indices.len();
+        if len == 0 {
+            self.list_state.select(None);
+            return;
+        }
+
+        if let Some(selected) = self.list_state.selected()
+            && selected >= len {
+                self.list_state.select(Some(len - 1));
+            }
+    }
+
+    /// Moves selection by `direction` (+1 or -1) and refreshes details.
+    fn move_selection(&mut self, direction: i32) {
+        if direction < 0 {
+            self.list_state.select_previous();
+        } else {
+            self.list_state.select_next();
+        }
+        self.clamp_selection();
+        self.refresh_details();
     }
 
     fn get_selected_item(&self) -> Option<&(Value, String, String)> {
@@ -140,13 +194,11 @@ impl AppState {
     }
 
     fn scroll_details_up(&mut self) {
-        if self.details_scroll > 0 {
-            self.details_scroll -= 1;
-        }
+        self.details_scroll_state.scroll_up();
     }
 
     fn scroll_details_down(&mut self) {
-        self.details_scroll += 1;
+        self.details_scroll_state.scroll_down();
     }
 
     fn filter_add_char(&mut self, c: char) {
@@ -212,23 +264,17 @@ impl AppState {
         } else {
             self.list_state.select(Some(0));
         }
-        self.details_scroll = 0;
+        self.refresh_details();
     }
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Early theme validation
-    if let Some(theme) = &args.theme {
-        match theme.as_str() {
-            "dracula" | "solarized" | "gruvbox" | "everforest_light" => (),
-            _ => anyhow::bail!(
-                "Unknown theme: {}. Available: dracula, solarized, gruvbox, everforest_light",
-                theme
-            ),
-        }
-    }
+    // Theme selection
+    let theme_name = args.theme.as_deref().unwrap_or("dracula");
+    let theme_enum = theme::Theme::from_str(theme_name).map_err(anyhow::Error::msg)?;
+    let theme = theme_enum.config();
 
     if args.game_versions {
         let project_dirs = directories::ProjectDirs::from("com", "cataclysmbn", "cbn-tui")
@@ -364,19 +410,6 @@ fn main() -> Result<()> {
     let index_time = start.elapsed();
     println!("Index built in {:.2}ms", index_time.as_secs_f64() * 1000.0);
 
-    // Choose theme
-    let theme_name = args.theme.as_deref().unwrap_or("dracula");
-    let theme = match theme_name {
-        "dracula" => theme::dracula_theme(),
-        "solarized" => theme::solarized_dark(),
-        "gruvbox" => theme::gruvbox_theme(),
-        "everforest_light" => theme::everforest_light_theme(),
-        _ => anyhow::bail!(
-            "Unknown theme: {}. Available: dracula, solarized, gruvbox, everforest_light",
-            theme_name
-        ),
-    };
-
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -435,33 +468,6 @@ where
 }
 
 fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) {
-    const PAGE_SCROLL_LINES: usize = 10;
-
-    fn clamp_selection(app: &mut AppState) {
-        // Clamp selection to valid indices when list shrinks/filters change.
-        let len = app.filtered_indices.len();
-        if len == 0 {
-            app.list_state.select(None);
-            return;
-        }
-
-        if let Some(selected) = app.list_state.selected()
-            && selected >= len
-        {
-            app.list_state.select(Some(len - 1));
-        }
-    }
-
-    fn move_selection(app: &mut AppState, direction: i32) {
-        if direction < 0 {
-            app.list_state.select_previous();
-        } else {
-            app.list_state.select_next();
-        }
-        clamp_selection(app);
-        app.details_scroll = 0;
-    }
-
     fn apply_filter_edit(app: &mut AppState, edit: impl FnOnce(&mut AppState)) {
         edit(app);
         app.update_filter();
@@ -478,21 +484,17 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
             }
 
             KeyCode::Up | KeyCode::Char('k') if !modifiers.contains(KeyModifiers::CONTROL) => {
-                move_selection(app, -1);
+                app.move_selection(-1);
             }
             KeyCode::Down | KeyCode::Char('j') if !modifiers.contains(KeyModifiers::CONTROL) => {
-                move_selection(app, 1);
+                app.move_selection(1);
             }
 
             KeyCode::PageUp => {
-                for _ in 0..PAGE_SCROLL_LINES {
-                    app.scroll_details_up();
-                }
+                app.details_scroll_state.scroll_page_up();
             }
             KeyCode::PageDown => {
-                for _ in 0..PAGE_SCROLL_LINES {
-                    app.scroll_details_down();
-                }
+                app.details_scroll_state.scroll_page_down();
             }
 
             KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -594,6 +596,7 @@ fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
                 .border_style(app.theme.border_selected)
                 .title_style(app.theme.title)
                 .title(format!(" Items ({}) ", app.filtered_indices.len()))
+                .title_bottom(Line::from(" up / down ").right_aligned())
                 .title_alignment(ratatui::layout::Alignment::Left),
         )
         .style(app.theme.list_normal)
@@ -603,32 +606,65 @@ fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
     f.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-fn render_details(f: &mut Frame, app: &AppState, area: Rect) {
-    let content = if let Some((json, _, _)) = app.get_selected_item() {
-        match serde_json::to_string_pretty(json) {
-            Ok(json_str) => highlight_json(&json_str, &app.theme.json_style),
-            Err(_) => Text::from("Error formatting JSON"),
+fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(app.theme.border.bg(app.theme.background))
+        .style(app.theme.border.bg(app.theme.background))
+        .title(" JSON ")
+        .title_alignment(ratatui::layout::Alignment::Left)
+        .title_style(app.theme.title)
+        .title_bottom(Line::from(" pg-up / pg-down ").right_aligned());
+
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+
+    if inner_area.width > 0 && inner_area.height > 0 {
+        // Apply 1-symbol horizontal padding within the inner area
+        let horizontal_padding = 1;
+        let content_width = inner_area.width.saturating_sub(horizontal_padding * 2);
+
+        // Calculate the height required when text is wrapped to content_width
+        let mut wrapped_height = 0;
+        for line in &app.details_text.lines {
+            let line_width = line.width() as u16;
+            if line_width == 0 {
+                wrapped_height += 1;
+            } else {
+                wrapped_height += line_width.div_ceil(content_width);
+            }
         }
-    } else {
-        Text::from("Select an item to view details")
-    };
+        let content_height = wrapped_height;
 
-    let paragraph = Paragraph::new(content)
-        .block(
-            Block::default()
-                .borders(Borders::ALL )
-                .border_style(app.theme.border)
-                .title("JSON")
-                .title_style(app.theme.title),
-        )
-        .style(app.theme.text)
-        .wrap(Wrap { trim: false })
-        .scroll((app.details_scroll.min(u16::MAX as usize) as u16, 0));
+        let mut scroll_view = ScrollView::new(Size::new(content_width, content_height))
+            .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
+            .horizontal_scrollbar_visibility(ScrollbarVisibility::Never);
 
-    f.render_widget(paragraph, area);
+        // Match the background of the scroll view buffer to the theme
+        let scroll_area = scroll_view.area();
+        scroll_view.buf_mut().set_style(scroll_area, app.theme.text);
+
+        let content_rect = Rect::new(0, 0, content_width, content_height);
+        scroll_view.render_widget(
+            Paragraph::new(app.details_text.clone())
+                .style(app.theme.text)
+                .wrap(Wrap { trim: false }),
+            content_rect,
+        );
+
+        // Render ScrollView centered horizontally within inner_area using the padding
+        let scroll_view_area = Rect::new(
+            inner_area.x + horizontal_padding,
+            inner_area.y,
+            content_width,
+            inner_area.height,
+        );
+
+        f.render_stateful_widget(scroll_view, scroll_view_area, &mut app.details_scroll_state);
+    }
 }
 
-fn render_filter(f: &mut Frame, app: &AppState, area: Rect) {
+fn render_filter(f: &mut Frame, app: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(if app.input_mode == InputMode::Filtering {
@@ -636,7 +672,7 @@ fn render_filter(f: &mut Frame, app: &AppState, area: Rect) {
         } else {
             app.theme.border
         })
-        .title("Filter (/)")
+        .title(" Filter (/) ")
         .title_style(app.theme.title);
 
     let inner = block.inner(area);
