@@ -201,7 +201,21 @@ pub fn search_with_index(
         // Intersect with AND logic
         results = Some(match results {
             None => matches,
-            Some(prev) => prev.intersection(&matches).copied().collect(),
+            Some(mut prev) => {
+                // Optimization: Always iterate over the smaller set
+                // and reuse the allocation if possible.
+                if prev.len() < matches.len() {
+                    // prev is smaller: iterate prev and keep only elements in matches
+                    prev.retain(|k| matches.contains(k));
+                    prev
+                } else {
+                    // matches is smaller (or equal): iterate matches and keep only elements in prev
+                    // We can reuse matches' allocation since we own it
+                    let mut m = matches;
+                    m.retain(|k| prev.contains(k));
+                    m
+                }
+            }
         });
 
         // Early exit if no matches left (optimization)
@@ -674,5 +688,55 @@ mod tests {
             !results.is_empty(),
             "Should find 'alien_resin' in nested object"
         );
+    }
+
+    #[test]
+    fn test_search_intersection_optimization() {
+        use serde_json::json;
+        // This test ensures that the intersection logic works correctly
+        // even when we optimize it to iterate the smaller set.
+        let mut items = Vec::new();
+        // Create 100 items
+        for i in 0..100 {
+            let id = format!("item_{}", i);
+            let type_ = if i < 10 { "rare" } else { "common" };
+            let cat = if i % 2 == 0 { "even" } else { "odd" };
+            items.push((
+                json!({"id": id, "type": type_, "category": cat}),
+                id,
+                type_.to_string(),
+            ));
+        }
+
+        let index = crate::search_index::SearchIndex::build(&items);
+
+        // Search for "common even"
+        // "common" matches 90 items (10..99)
+        // "even" matches 50 items (0, 2, ... 98)
+        // Intersection should be 45 items (10, 12, ... 98)
+        let results = search_with_index(&index, &items, "common even");
+        assert_eq!(results.len(), 45);
+
+        // Verify contents
+        for idx in results {
+            let i = idx; // items are indexed 0..99
+            assert!(i >= 10); // common
+            assert!(i % 2 == 0); // even
+        }
+
+        // Search for "even common" (reverse order)
+        let results2 = search_with_index(&index, &items, "even common");
+        assert_eq!(results2.len(), 45);
+
+        // Search for "rare even"
+        // "rare" matches 10 items (0..9)
+        // "even" matches 50 items
+        // Intersection should be 5 items (0, 2, 4, 6, 8)
+        let results3 = search_with_index(&index, &items, "rare even");
+        assert_eq!(results3.len(), 5);
+        for idx in results3 {
+            assert!(idx < 10);
+            assert!(idx % 2 == 0);
+        }
     }
 }
