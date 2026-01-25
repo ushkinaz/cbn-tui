@@ -102,7 +102,11 @@ impl AppState {
     ) -> Self {
         let filtered_indices: Vec<usize> = (0..indexed_items.len()).collect();
         let mut list_state = ListState::default();
-        list_state.select(Some(0));
+        if filtered_indices.is_empty() {
+            list_state.select(None);
+        } else {
+            list_state.select(Some(0));
+        }
 
         Self {
             indexed_items,
@@ -193,7 +197,11 @@ impl AppState {
             matcher::search_with_index(&self.search_index, &self.indexed_items, &self.filter_text);
         self.filtered_indices = new_filtered;
         // Reset selection to first item
-        self.list_state.select(Some(0));
+        if self.filtered_indices.is_empty() {
+            self.list_state.select(None);
+        } else {
+            self.list_state.select(Some(0));
+        }
         self.details_scroll = 0;
     }
 }
@@ -537,7 +545,10 @@ fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
             "(unknown)".to_string()
         };
 
-        let label = format!("[{}] {}", type_, display_name);
+        let label = Line::from(vec![
+            Span::styled(format!("[{}] ", type_), app.theme.title),
+            Span::raw(display_name),
+        ]);
         ListItem::new(label)
     });
 
@@ -582,33 +593,32 @@ fn render_details(f: &mut Frame, app: &AppState, area: Rect) {
 }
 
 fn render_filter(f: &mut Frame, app: &AppState, area: Rect) {
-    let filter_display = if app.filter_focused {
-        // Insert cursor at actual position
-        let char_count = app.filter_text.chars().count();
-        let cursor_pos = app.filter_cursor.min(char_count);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(if app.filter_focused {
+            app.theme.border_selected
+        } else {
+            app.theme.border
+        })
+        .title("Filter ('/' to focus)")
+        .title_style(app.theme.title);
 
-        let before: String = app.filter_text.chars().take(cursor_pos).collect();
-        let after: String = app.filter_text.chars().skip(cursor_pos).collect();
-        format!("{}|{}", before, after)
-    } else {
-        app.filter_text.clone()
-    };
-
-    let paragraph = Paragraph::new(filter_display)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(if app.filter_focused {
-                    app.theme.border_selected
-                } else {
-                    app.theme.border
-                })
-                .title("Filter ('/' to focus)")
-                .title_style(app.theme.title),
-        )
+    let inner = block.inner(area);
+    let paragraph = Paragraph::new(app.filter_text.as_str())
+        .block(block)
         .style(app.theme.text);
 
     f.render_widget(paragraph, area);
+
+    if app.filter_focused {
+        if inner.width > 0 && inner.height > 0 {
+            let cursor_offset = filter_cursor_offset(&app.filter_text, app.filter_cursor);
+            let max_x = inner.width.saturating_sub(1);
+            let cursor_x = inner.x + cursor_offset.min(max_x);
+            let cursor_y = inner.y;
+            f.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
 }
 
 /// Applies syntax highlighting to JSON text using theme-consistent colors.
@@ -745,6 +755,13 @@ fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
     Text::from(lines)
 }
 
+fn filter_cursor_offset(text: &str, cursor: usize) -> u16 {
+    let char_count = text.chars().count();
+    let clamped = cursor.min(char_count);
+    let width = text.chars().take(clamped).count();
+    width.min(u16::MAX as usize) as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,6 +804,15 @@ mod tests {
         assert!(full_text.contains("\"test\""));
         assert!(full_text.contains("123"));
         assert!(full_text.contains("true"));
+    }
+
+    #[test]
+    fn test_filter_cursor_offset() {
+        let text = "hello";
+        assert_eq!(filter_cursor_offset(text, 0), 0);
+        assert_eq!(filter_cursor_offset(text, 2), 2);
+        assert_eq!(filter_cursor_offset(text, 5), 5);
+        assert_eq!(filter_cursor_offset(text, 10), 5);
     }
 
     #[test]
