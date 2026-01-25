@@ -548,7 +548,7 @@ fn ui(f: &mut Frame, app: &mut AppState) {
 
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(chunks[0]);
 
     // Render item list
@@ -567,24 +567,24 @@ fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
         let display_name = if !id.is_empty() {
             id.clone()
         } else if let Some(abstract_) = json.get("abstract").and_then(|v| v.as_str()) {
-            format!("(abstract) {}", abstract_)
+            format!("(abs) {}", abstract_)
         } else if let Some(name) = json.get("name") {
             if let Some(name_str) = name.get("str").and_then(|v| v.as_str()) {
                 name_str.to_string()
             } else if let Some(name_str) = name.as_str() {
                 name_str.to_string()
             } else {
-                "(unknown)".to_string()
+                "(?)".to_string()
             }
         } else {
-            "(unknown)".to_string()
+            "(?)".to_string()
         };
 
-        let label = Line::from(vec![
-            Span::styled(format!("[{}] ", type_), app.theme.title),
+        let type_label = Line::from(vec![
+            Span::styled(format!("{} ", type_), app.theme.title),
             Span::raw(display_name),
         ]);
-        ListItem::new(label)
+        ListItem::new(type_label)
     });
 
     let list = List::new(items)
@@ -597,6 +597,7 @@ fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
                 .title_alignment(ratatui::layout::Alignment::Left),
         )
         .style(app.theme.list_normal)
+        .scroll_padding(2)
         .highlight_style(app.theme.list_selected);
 
     f.render_stateful_widget(list, area, &mut app.list_state);
@@ -615,9 +616,9 @@ fn render_details(f: &mut Frame, app: &AppState, area: Rect) {
     let paragraph = Paragraph::new(content)
         .block(
             Block::default()
-                .borders(Borders::ALL)
+                .borders(Borders::ALL )
                 .border_style(app.theme.border)
-                .title("JSON definition")
+                .title("JSON")
                 .title_style(app.theme.title),
         )
         .style(app.theme.text)
@@ -635,14 +636,14 @@ fn render_filter(f: &mut Frame, app: &AppState, area: Rect) {
         } else {
             app.theme.border
         })
-        .title("Filter")
+        .title("Filter (/)")
         .title_style(app.theme.title);
 
     let inner = block.inner(area);
     let content = if app.filter_text.is_empty() && app.input_mode != InputMode::Filtering {
         Text::from(Line::from(Span::styled(
-            "Press '/' to focus...",
-            app.theme.text.add_modifier(Modifier::DIM),
+            "t:gun ammo:rpg",
+            app.theme.text.add_modifier(Modifier::DIM).italic(),
         )))
     } else {
         Text::from(app.filter_text.as_str())
