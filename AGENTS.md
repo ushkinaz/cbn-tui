@@ -69,16 +69,16 @@ Cataclysm:BN JSON Structure
 - Name formatting can vary by record type; keep display logic defensive.
 
 Coding Style (Rust)
-- Keep `build_ui` focused on layout; callbacks handle behavior.
-- Store `AppState` in `Cursive` user data via `set_user_data`.
-- Use helper functions like `CbnItem::from_json` and `highlight_json`.
+- Keep rendering logic focused on drawing; state updates happen in event handling.
+- Store `AppState` as a mutable struct in the main loop.
+- Use helper functions like `highlight_json` for data transformation.
 - Formatting: rely on rustfmt defaults; avoid manual alignment.
 - Prefer explicit `String` conversions at boundaries.
 - Avoid unnecessary clones of `serde_json::Value` or large strings.
 - Prefer early returns for guard clauses and error conditions.
-- Keep filtering logic in `CbnItem::matches` case-insensitive.
-- Tests live in `#[cfg(test)]` module inside `src/main.rs`.
-- Keep UI callbacks small and focused; avoid heavy work in `on_select`.
+- Keep filtering logic in matcher module case-insensitive.
+- Tests live in `#[cfg(test)]` module inside respecive files.
+- Keep event handlers small and focused; heavy work happens in separate functions.
 - Use local variables for repeated lookups to reduce borrow complexity.
 
 Imports and Naming
@@ -111,15 +111,15 @@ Data and JSON Handling
 - Avoid storing derived strings that can be computed once per item.
 
 UI and Interaction Conventions
-- Use `cursive` for all views and layout.
-- `SelectView` drives the list, `ScrollView<TextView>` shows details.
-- Update UI via `call_on_name` and `with_name` identifiers.
-- Use `StyledString` for syntax highlighting; keep palette-consistent colors.
-- Theme lives in `solarized_dark`; prefer `PaletteColor` roles.
-- Global keybindings: `q`/`Esc` quit, `/` focuses filter.
-- Filter input uses `on_edit` and repopulates the list.
-- Prefer `Panel` and `ResizedView` helpers for sizing consistency.
-- Keep layout split consistent with `Elements` (left) and details (right).
+- Use `ratatui` for all rendering and layout.
+- `List` widget renders the item list with selection, `Paragraph` shows details.
+- Rendering happens in a single render function; state drives the UI.
+- Use `Vec<Span>` for syntax highlighting with theme-consistent colors.
+- Theme system defined in `theme.rs` returns `ThemeConfig` with ratatui styles.
+- Event loop handles keyboard: `q`/`Esc` quit, `/` focuses filter, Up/Down navigate.
+- Filter input updates state directly; repopulation triggers on state change.
+- Use `Layout` with constraints for responsive panel sizing.
+- Keep layout split consistent with Elements (40% left) and details (60% right).
 
 Performance Notes
 - Dataset is large; avoid repeated scans when possible.

@@ -1,16 +1,34 @@
+//! # cbn-tui
+//!
+//! A terminal user interface (TUI) for browsing Cataclysm: Bright Nights game data.
+//!
+//! This application provides an interactive browser for viewing and searching through
+//! game JSON data with features including:
+//! - Fast inverted-index search with classifiers (id:, type:, category:)
+//! - Four beautiful themes (Dracula, Solarized, Gruvbox, Everforest Light)
+//! - Syntax-highlighted JSON display
+//! - Real-time filtering with UTF-8 support
+//! - Automatic data downloading and caching
+
 use anyhow::Result;
 use clap::Parser;
-use cursive::Cursive;
-use cursive::align::HAlign;
-use cursive::theme::{ColorStyle, PaletteColor};
-use cursive::traits::*;
-use cursive::utils::markup::StyledString;
-use cursive::views::{
-    EditView, LinearLayout, Panel, ResizedView, ScrollView, SelectView, TextView,
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{
+    Frame, Terminal,
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::Stylize,
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use serde::Deserialize;
 use serde_json::Value;
 use std::fs;
+use std::io;
 
 mod matcher;
 mod search_index;
@@ -52,8 +70,7 @@ struct GameBuild {
     created_at: String,
 }
 
-/// Application state stored in Cursive's user data.
-/// Contains indexed items, search index, and current filtered subset.
+/// Application state for ratatui app.
 struct AppState {
     /// All loaded items in indexed format (json, id, type)
     indexed_items: Vec<(Value, String, String)>,
@@ -61,10 +78,124 @@ struct AppState {
     search_index: search_index::SearchIndex,
     /// Indices into indexed_items that match the current filter
     filtered_indices: Vec<usize>,
-    /// Track search version for debouncing
-    search_version: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// Highlighting style for JSON
-    json_style: theme::JsonStyle,
+    /// List selection state managed by ratatui
+    list_state: ListState,
+    /// Filter input text
+    filter_text: String,
+    /// Cursor position in filter
+    filter_cursor: usize,
+    /// Whether filter input has focus
+    filter_focused: bool,
+    /// Theme configuration
+    theme: theme::ThemeConfig,
+    /// Scroll offset for details pane
+    details_scroll: usize,
+    /// Flag to quit app
+    should_quit: bool,
+}
+
+impl AppState {
+    fn new(
+        indexed_items: Vec<(Value, String, String)>,
+        search_index: search_index::SearchIndex,
+        theme: theme::ThemeConfig,
+    ) -> Self {
+        let filtered_indices: Vec<usize> = (0..indexed_items.len()).collect();
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
+
+        Self {
+            indexed_items,
+            search_index,
+            filtered_indices,
+            list_state,
+            filter_text: String::new(),
+            filter_cursor: 0,
+            filter_focused: false,
+            theme,
+            details_scroll: 0,
+            should_quit: false,
+        }
+    }
+
+    fn get_selected_item(&self) -> Option<&(Value, String, String)> {
+        self.list_state
+            .selected()
+            .and_then(|idx| self.filtered_indices.get(idx))
+            .and_then(|&idx| self.indexed_items.get(idx))
+    }
+
+    fn scroll_details_up(&mut self) {
+        if self.details_scroll > 0 {
+            self.details_scroll -= 1;
+        }
+    }
+
+    fn scroll_details_down(&mut self) {
+        self.details_scroll += 1;
+    }
+
+    fn filter_add_char(&mut self, c: char) {
+        // Convert char index to byte index for safe UTF-8 insertion
+        let byte_idx = self
+            .filter_text
+            .char_indices()
+            .nth(self.filter_cursor)
+            .map(|(idx, _)| idx)
+            .unwrap_or(self.filter_text.len());
+        self.filter_text.insert(byte_idx, c);
+        self.filter_cursor += 1;
+    }
+
+    fn filter_backspace(&mut self) {
+        if self.filter_cursor > 0 {
+            self.filter_cursor -= 1;
+            // Convert char index to byte index for safe UTF-8 removal
+            if let Some((byte_idx, _)) = self.filter_text.char_indices().nth(self.filter_cursor) {
+                self.filter_text.remove(byte_idx);
+            }
+        }
+    }
+
+    fn filter_delete(&mut self) {
+        let char_count = self.filter_text.chars().count();
+        if self.filter_cursor < char_count {
+            // Convert char index to byte index for safe UTF-8 removal
+            if let Some((byte_idx, _)) = self.filter_text.char_indices().nth(self.filter_cursor) {
+                self.filter_text.remove(byte_idx);
+            }
+        }
+    }
+
+    fn filter_move_cursor_left(&mut self) {
+        if self.filter_cursor > 0 {
+            self.filter_cursor -= 1;
+        }
+    }
+
+    fn filter_move_cursor_right(&mut self) {
+        let char_count = self.filter_text.chars().count();
+        if self.filter_cursor < char_count {
+            self.filter_cursor += 1;
+        }
+    }
+
+    fn filter_move_to_start(&mut self) {
+        self.filter_cursor = 0;
+    }
+
+    fn filter_move_to_end(&mut self) {
+        self.filter_cursor = self.filter_text.chars().count();
+    }
+
+    fn update_filter(&mut self) {
+        let new_filtered =
+            matcher::search_with_index(&self.search_index, &self.indexed_items, &self.filter_text);
+        self.filtered_indices = new_filtered;
+        // Reset selection to first item
+        self.list_state.select(Some(0));
+        self.details_scroll = 0;
+    }
 }
 
 fn main() -> Result<()> {
@@ -215,240 +346,279 @@ fn main() -> Result<()> {
     let index_time = start.elapsed();
     println!("Index built in {:.2}ms", index_time.as_secs_f64() * 1000.0);
 
-    // Create Cursive app
-    let mut siv = cursive::default();
-
     // Choose theme
     let theme_name = args.theme.as_deref().unwrap_or("dracula");
-    let (theme, json_style) = match theme_name {
+    let theme = match theme_name {
         "dracula" => theme::dracula_theme(),
         "solarized" => theme::solarized_dark(),
         "gruvbox" => theme::gruvbox_theme(),
         "everforest_light" => theme::everforest_light_theme(),
-        _ => anyhow::bail!("Unknown theme: {}. Available: dracula, solarized, gruvbox, everforest_light", theme_name),
+        _ => anyhow::bail!(
+            "Unknown theme: {}. Available: dracula, solarized, gruvbox, everforest_light",
+            theme_name
+        ),
     };
-    siv.set_theme(theme);
 
-    // Initialize state with index
-    let filtered_indices: Vec<usize> = (0..indexed_items.len()).collect();
-    siv.set_user_data(AppState {
-        indexed_items,
-        search_index,
-        filtered_indices,
-        search_version: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        json_style,
-    });
+    // Setup terminal
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
 
-    // Build UI
-    build_ui(&mut siv);
+    // Create app state
+    let mut app = AppState::new(indexed_items, search_index, theme);
 
-    // Add global keybindings
-    siv.add_global_callback('q', |s| s.quit());
-    siv.add_global_callback(cursive::event::Key::Esc, |s| s.quit());
-    siv.add_global_callback('/', |s| {
-        s.focus_name("filter").ok();
-    });
+    // Run app
+    let res = run_app(&mut terminal, &mut app);
 
-    // Run the app
-    siv.run();
+    // Restore terminal
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
 
+    res
+}
+
+fn run_app<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut AppState,
+) -> Result<()> {
+    // Initial draw
+    terminal.draw(|f| ui(f, app))?;
+
+    loop {
+        if app.should_quit {
+            break;
+        }
+
+        // Block waiting for events (no CPU usage when idle)
+        match event::read()? {
+            Event::Key(key) => {
+                handle_key_event(app, key.code, key.modifiers);
+                // Redraw after handling key event
+                terminal.draw(|f| ui(f, app))?;
+            }
+            Event::Resize(_, _) => {
+                // Redraw on terminal resize
+                terminal.draw(|f| ui(f, app))?;
+            }
+            _ => {} // Ignore other events
+        }
+    }
     Ok(())
 }
 
-/// Builds the user interface with three main components:
-/// - Item list (left pane, 40% width)
-/// - Details pane (right pane, 60% width)
-/// - Filter input (bottom, fixed height)
-fn build_ui(siv: &mut Cursive) {
-    // Create the item list
-    let select = SelectView::<usize>::new()
-        .h_align(HAlign::Left)
-        .on_select(on_item_select)
-        .with_name("item_list");
-
-    // Repopulate_list will do the initial population after adding a layer
-
-    // Create a details view
-    let details = TextView::new("Select an item to view details")
-        .scrollable()
-        .with_name("details");
-
-    // Create filter input
-    let filter = EditView::new().on_edit(on_filter_edit).with_name("filter");
-
-    // Create the main layout
-    let main_layout = LinearLayout::horizontal()
-        .child(
-            Panel::new(select.scrollable())
-                .title("Elements")
-                .fixed_width(40),
-        )
-        .child(Panel::new(details).title("JSON definition").full_width());
-
-    let root = LinearLayout::vertical()
-        .child(ResizedView::with_full_screen(main_layout))
-        .child(
-            Panel::new(filter)
-                .title("Filter ('/' to focus)")
-                .fixed_height(3),
-        );
-
-    siv.add_fullscreen_layer(root);
-
-    // Populate the list initially
-    repopulate_list(siv);
-
-    // Update details for the first item
-    update_details_for_selected(siv);
-
-    // Set initial focus on a list
-    siv.focus_name("item_list").ok();
-}
-
-/// Callback triggered when user selects an item in the list.
-/// Updates the details pane with highlighted JSON for the selected item.
-fn on_item_select(siv: &mut Cursive, item_idx: &usize) {
-    update_details_for_item(siv, *item_idx);
-}
-
-/// Updates the details pane with the JSON for the specified item index.
-fn update_details_for_item(siv: &mut Cursive, item_idx: usize) {
-    let state = siv.user_data::<AppState>().unwrap();
-    let json_style = state.json_style;
-    if let Some((json, _, _)) = state.indexed_items.get(item_idx)
-        && let Ok(json_str) = serde_json::to_string_pretty(json)
-    {
-        let highlighted = highlight_json(&json_str, &json_style);
-        siv.call_on_name("details", |view: &mut ScrollView<TextView>| {
-            view.get_inner_mut().set_content(highlighted);
-        });
-    }
-}
-
-/// Updates the details pane for the currently selected item in the list.
-fn update_details_for_selected(siv: &mut Cursive) {
-    let selected_idx = siv
-        .call_on_name("item_list", |view: &mut SelectView<usize>| {
-            view.selection().map(|rc| *rc)
-        })
-        .flatten();
-
-    if let Some(idx) = selected_idx {
-        update_details_for_item(siv, idx);
-    }
-}
-
-/// Callback triggered when user edits the filter input.
-/// Filters items based on the query and repopulates the list.
-/// Implements 150ms debouncing to keep UI responsive.
-fn on_filter_edit(siv: &mut Cursive, query: &str, _cursor: usize) {
-    let state = siv.user_data::<AppState>().unwrap();
-    let version = state.search_version.as_ref();
-    let current_version = version.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-
-    let query_clone = query.to_string();
-    let version_clone = state.search_version.clone();
-    let cb_sink = siv.cb_sink().clone();
-
-    std::thread::spawn(move || {
-        // Wait for typing to pause
-        std::thread::sleep(std::time::Duration::from_millis(150));
-
-        // Only proceed if no newer search request has started
-        if version_clone.load(std::sync::atomic::Ordering::SeqCst) == current_version {
-            cb_sink
-                .send(Box::new(move |s| {
-                    // Perform the actual search on the main thread
-                    let new_filtered = {
-                        let state = s.user_data::<AppState>().unwrap();
-                        matcher::search_with_index(
-                            &state.search_index,
-                            &state.indexed_items,
-                            &query_clone,
-                        )
-                    };
-
-                    if let Some(state) = s.user_data::<AppState>() {
-                        state.filtered_indices = new_filtered;
-                    }
-
-                    repopulate_list(s);
-                }))
-                .ok();
+fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) {
+    match code {
+        KeyCode::Char('q') | KeyCode::Esc if !app.filter_focused => {
+            app.should_quit = true;
         }
-    });
+        KeyCode::Char('/') if !app.filter_focused => {
+            app.filter_focused = true;
+        }
+        KeyCode::Esc if app.filter_focused => {
+            app.filter_focused = false;
+        }
+        KeyCode::Enter if app.filter_focused => {
+            app.filter_focused = false;
+        }
+        KeyCode::Up if !app.filter_focused => {
+            app.list_state.select_previous();
+            // Clamp to valid indices
+            if let Some(selected) = app.list_state.selected()
+                && selected >= app.filtered_indices.len()
+                && !app.filtered_indices.is_empty()
+            {
+                app.list_state.select(Some(app.filtered_indices.len() - 1));
+            }
+            app.details_scroll = 0;
+        }
+        KeyCode::Down if !app.filter_focused => {
+            app.list_state.select_next();
+            // Clamp to valid indices
+            if let Some(selected) = app.list_state.selected()
+                && selected >= app.filtered_indices.len()
+                && !app.filtered_indices.is_empty()
+            {
+                app.list_state.select(Some(app.filtered_indices.len() - 1));
+            }
+            app.details_scroll = 0;
+        }
+        KeyCode::PageUp if !app.filter_focused => {
+            for _ in 0..10 {
+                app.scroll_details_up();
+            }
+        }
+        KeyCode::PageDown if !app.filter_focused => {
+            for _ in 0..10 {
+                app.scroll_details_down();
+            }
+        }
+        KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) && !app.filter_focused => {
+            app.scroll_details_up();
+        }
+        KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) && !app.filter_focused => {
+            app.scroll_details_down();
+        }
+        // Filter input handling
+        KeyCode::Char(c) if app.filter_focused => {
+            app.filter_add_char(c);
+            app.update_filter();
+        }
+        KeyCode::Backspace if app.filter_focused => {
+            app.filter_backspace();
+            app.update_filter();
+        }
+        KeyCode::Delete if app.filter_focused => {
+            app.filter_delete();
+            app.update_filter();
+        }
+        KeyCode::Left if app.filter_focused => {
+            app.filter_move_cursor_left();
+        }
+        KeyCode::Right if app.filter_focused => {
+            app.filter_move_cursor_right();
+        }
+        KeyCode::Home if app.filter_focused => {
+            app.filter_move_to_start();
+        }
+        KeyCode::End if app.filter_focused => {
+            app.filter_move_to_end();
+        }
+        _ => {}
+    }
 }
 
-/// Helper function to repopulate the item list from the current filtered indices.
-/// Clears and rebuilds the SelectView with filtered items.
-fn repopulate_list(siv: &mut Cursive) {
-    let (filtered_indices, items_data): (Vec<usize>, Vec<(String, String, String)>) = {
-        let state = siv.user_data::<AppState>().unwrap();
-        let indices = state.filtered_indices.clone();
-        let data: Vec<(String, String, String)> = indices
-            .iter()
-            .filter_map(|&idx| {
-                state.indexed_items.get(idx).map(|(json, id, type_)| {
-                    let display_name = if !id.is_empty() {
-                        id.clone()
-                    } else if let Some(abstract_) = json.get("abstract").and_then(|v| v.as_str()) {
-                        format!("(abstract) {}", abstract_)
-                    } else if let Some(name) = json.get("name") {
-                        if let Some(name_str) = name.get("str").and_then(|v| v.as_str()) {
-                            name_str.to_string()
-                        } else if let Some(name_str) = name.as_str() {
-                            name_str.to_string()
-                        } else {
-                            "(unknown)".to_string()
-                        }
-                    } else {
-                        "(unknown)".to_string()
-                    };
+fn ui(f: &mut Frame, app: &mut AppState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),    // Main area - takes all space
+            Constraint::Length(3), // Filter input - fixed 3 lines
+        ])
+        .split(f.area());
 
-                    (
-                        format!("[{}] {}", type_, display_name),
-                        type_.clone(),
-                        display_name,
-                    )
-                })
-            })
-            .collect();
-        (indices, data)
+    let main_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(chunks[0]);
+
+    // Render item list
+    render_item_list(f, app, main_chunks[0]);
+
+    // Render details pane
+    render_details(f, app, main_chunks[1]);
+
+    // Render filter input
+    render_filter(f, app, chunks[1]);
+}
+
+fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
+    let items = app.filtered_indices.iter().map(|&idx| {
+        let (json, id, type_) = &app.indexed_items[idx];
+        let display_name = if !id.is_empty() {
+            id.clone()
+        } else if let Some(abstract_) = json.get("abstract").and_then(|v| v.as_str()) {
+            format!("(abstract) {}", abstract_)
+        } else if let Some(name) = json.get("name") {
+            if let Some(name_str) = name.get("str").and_then(|v| v.as_str()) {
+                name_str.to_string()
+            } else if let Some(name_str) = name.as_str() {
+                name_str.to_string()
+            } else {
+                "(unknown)".to_string()
+            }
+        } else {
+            "(unknown)".to_string()
+        };
+
+        let label = format!("[{}] {}", type_, display_name);
+        ListItem::new(label)
+    });
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.theme.border_selected)
+                .title_style(app.theme.title)
+                .title(format!(" Items ({}) ", app.filtered_indices.len()))
+                .title_alignment(ratatui::layout::Alignment::Left),
+        )
+        .style(app.theme.list_normal)
+        .highlight_style(app.theme.list_selected);
+
+    f.render_stateful_widget(list, area, &mut app.list_state);
+}
+
+fn render_details(f: &mut Frame, app: &AppState, area: Rect) {
+    let content = if let Some((json, _, _)) = app.get_selected_item() {
+        match serde_json::to_string_pretty(json) {
+            Ok(json_str) => highlight_json(&json_str, &app.theme.json_style),
+            Err(_) => Text::from("Error formatting JSON"),
+        }
+    } else {
+        Text::from("Select an item to view details")
     };
 
-    siv.call_on_name("item_list", move |view: &mut SelectView<usize>| {
-        view.clear();
-        for (i, &idx) in filtered_indices.iter().enumerate() {
-            let label = &items_data[i].0;
-            view.add_item(label.clone(), idx);
-        }
-        // Select first item if available
-        if !filtered_indices.is_empty() {
-            view.set_selection(0);
-        }
-    });
+    let paragraph = Paragraph::new(content)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.theme.border)
+                .title("JSON definition")
+                .title_style(app.theme.title),
+        )
+        .style(app.theme.text)
+        .wrap(Wrap { trim: false })
+        .scroll(((app.details_scroll.min(u16::MAX as usize)) as u16, 0));
 
-    // Update details after repopulating the list
-    update_details_for_selected(siv);
+    f.render_widget(paragraph, area);
+}
+
+fn render_filter(f: &mut Frame, app: &AppState, area: Rect) {
+    let filter_display = if app.filter_focused {
+        // Insert cursor at actual position
+        let char_count = app.filter_text.chars().count();
+        let cursor_pos = app.filter_cursor.min(char_count);
+
+        let before: String = app.filter_text.chars().take(cursor_pos).collect();
+        let after: String = app.filter_text.chars().skip(cursor_pos).collect();
+        format!("{}|{}", before, after)
+    } else {
+        app.filter_text.clone()
+    };
+
+    let paragraph = Paragraph::new(filter_display)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(if app.filter_focused {
+                    app.theme.border_selected
+                } else {
+                    app.theme.border
+                })
+                .title("Filter ('/' to focus)")
+                .title_style(app.theme.title),
+        )
+        .style(app.theme.text);
+
+    f.render_widget(paragraph, area);
 }
 
 /// Applies syntax highlighting to JSON text using theme-consistent colors.
-fn highlight_json(json: &str, style: &theme::JsonStyle) -> StyledString {
-    let mut result = StyledString::new();
+/// Returns a Text object for ratatui rendering.
+fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
+    let mut lines = Vec::new();
 
-    // Use palette roles for the foundation styles
-    // This ensures highlighting background matches the View background exactly.
-    let style_default = ColorStyle::new(PaletteColor::Primary, PaletteColor::View);
-    let style_key = ColorStyle::new(PaletteColor::TitlePrimary, PaletteColor::View);
-    let style_punct = ColorStyle::new(PaletteColor::Secondary, PaletteColor::View);
-
-    // Accent colors for values from the provided style
-    let col_string = style.string;
-    let col_num = style.number;
-    let col_bool = style.boolean;
-
-    for line in json.lines() {
-        let mut remaining = line;
+    for line_str in json.lines() {
+        let mut spans = Vec::new();
+        let mut remaining = line_str;
 
         while !remaining.is_empty() {
             if let Some(pos) = remaining.find('"') {
@@ -463,7 +633,9 @@ fn highlight_json(json: &str, style: &theme::JsonStyle) -> StyledString {
                 if is_escaped {
                     // This quote is escaped, treat it as normal text and continue searching
                     let prefix = &remaining[..pos + 1];
-                    result.append_styled(prefix, style_default);
+                    if !prefix.is_empty() {
+                        spans.push(Span::raw(prefix.to_string()));
+                    }
                     remaining = &remaining[pos + 1..];
                     continue;
                 }
@@ -471,7 +643,7 @@ fn highlight_json(json: &str, style: &theme::JsonStyle) -> StyledString {
                 // Add prefix before quotes
                 let prefix = &remaining[..pos];
                 if !prefix.is_empty() {
-                    result.append_styled(prefix, style_default);
+                    spans.push(Span::raw(prefix.to_string()));
                 }
 
                 let rest = &remaining[pos + 1..];
@@ -497,17 +669,27 @@ fn highlight_json(json: &str, style: &theme::JsonStyle) -> StyledString {
                     let quoted = &rest[..ep];
                     let is_key = rest[ep + 1..].trim_start().starts_with(':');
 
-                    let quote_style = if is_key {
-                        style_key
+                    let styled = if is_key {
+                        Span::styled(
+                            format!("\"{}\"", quoted),
+                            ratatui::style::Style::default()
+                                .fg(ratatui::style::Color::Cyan)
+                                .bold(),
+                        )
                     } else {
-                        ColorStyle::new(col_string, PaletteColor::View)
+                        Span::styled(
+                            format!("\"{}\"", quoted),
+                            ratatui::style::Style::default().fg(json_style.string),
+                        )
                     };
 
-                    result.append_styled(format!("\"{}\"", quoted), quote_style);
+                    spans.push(styled);
                     remaining = &rest[ep + 1..];
                 } else {
-                    result
-                        .append_styled(remaining, ColorStyle::new(col_string, PaletteColor::View));
+                    spans.push(Span::styled(
+                        remaining.to_string(),
+                        ratatui::style::Style::default().fg(json_style.string),
+                    ));
                     remaining = "";
                 }
             } else {
@@ -517,7 +699,7 @@ fn highlight_json(json: &str, style: &theme::JsonStyle) -> StyledString {
                     let trimmed = remaining_processed.trim_start();
                     let start_offset = remaining_processed.len() - trimmed.len();
                     if start_offset > 0 {
-                        result.append_styled(&remaining_processed[..start_offset], style_default);
+                        spans.push(Span::raw(remaining_processed[..start_offset].to_string()));
                     }
 
                     if trimmed.is_empty() {
@@ -533,42 +715,40 @@ fn highlight_json(json: &str, style: &theme::JsonStyle) -> StyledString {
                     let token = &trimmed[..token_end];
                     let rest = &trimmed[token_end..];
 
-                    let token_style = if token == "true" || token == "false" || token == "null" {
-                        ColorStyle::new(col_bool, PaletteColor::View)
+                    let styled = if token == "true" || token == "false" || token == "null" {
+                        Span::styled(
+                            token.to_string(),
+                            ratatui::style::Style::default().fg(json_style.boolean),
+                        )
                     } else if (token.chars().all(|c| {
                         c.is_numeric() || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+'
                     })) && !token.is_empty()
                         && token.chars().any(|c| c.is_numeric())
                     {
-                        ColorStyle::new(col_num, PaletteColor::View)
-                    } else if token == "{"
-                        || token == "}"
-                        || token == "["
-                        || token == "]"
-                        || token == ":"
-                        || token == ","
-                    {
-                        style_punct
+                        Span::styled(
+                            token.to_string(),
+                            ratatui::style::Style::default().fg(json_style.number),
+                        )
                     } else {
-                        style_default
+                        Span::raw(token.to_string())
                     };
 
-                    result.append_styled(token, token_style);
+                    spans.push(styled);
                     remaining_processed = rest;
                 }
                 remaining = "";
             }
         }
-        result.append_plain("\n");
+        lines.push(Line::from(spans));
     }
 
-    result
+    Text::from(lines)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cursive::theme::Color;
+    use ratatui::style::Color;
     use serde_json::json;
 
     #[test]
@@ -581,24 +761,32 @@ mod tests {
     "key": "value"
   }
 }"#;
-        let style = theme::JsonStyle {
+        let json_style = theme::JsonStyle {
             string: Color::Rgb(0, 255, 0),
             number: Color::Rgb(0, 0, 255),
             boolean: Color::Rgb(255, 0, 0),
         };
-        let highlighted = highlight_json(json, &style);
+        let highlighted = highlight_json(json, &json_style);
 
-        // Basic check that we have content - source() returns the underlying text
-        let source = highlighted.source();
-        assert!(!source.is_empty());
-        assert!(source.contains("\"id\""));
-        assert!(source.contains("\"test\""));
-        assert!(source.contains("123"));
-        assert!(source.contains("true"));
+        // Basic check that we have content
+        assert!(!highlighted.lines.is_empty());
 
-        // The function successfully creates a StyledString, which means
-        // it processes the JSON without panicking. The actual color verification
-        // would require runtime testing in a terminal.
+        // Collect all text content
+        let full_text: String = highlighted
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert!(full_text.contains("\"id\""));
+        assert!(full_text.contains("\"test\""));
+        assert!(full_text.contains("123"));
+        assert!(full_text.contains("true"));
     }
 
     #[test]
