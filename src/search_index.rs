@@ -113,11 +113,10 @@ impl SearchIndex {
             // Efficiency check: if the word is already lowercase, we can avoid the allocation
             // for the search key if it's already present in the map.
             let is_lowercase = word.chars().all(|c| !c.is_uppercase());
-            if is_lowercase
-                && let Some(set) = word_index.get_mut(word) {
-                    set.insert(idx);
-                    continue;
-                }
+            if is_lowercase && let Some(set) = word_index.get_mut(word) {
+                set.insert(idx);
+                continue;
+            }
 
             // Fallback for mixed-case or new words
             let word_lower = word.to_lowercase();
