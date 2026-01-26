@@ -151,7 +151,7 @@ pub fn search_with_index(
     items: &[(Value, String, String)],
     query: &str,
 ) -> Vec<usize> {
-    use std::collections::HashSet;
+    use foldhash::HashSet;
 
     if query.is_empty() {
         return (0..items.len()).collect();
@@ -235,7 +235,7 @@ fn slow_search_classifier(
     classifier: &str,
     pattern: &str,
     exact: bool,
-) -> std::collections::HashSet<usize> {
+) -> foldhash::HashSet<usize> {
     items
         .iter()
         .enumerate()
@@ -249,7 +249,7 @@ fn slow_search_no_classifier(
     items: &[(Value, String, String)],
     pattern: &str,
     exact: bool,
-) -> std::collections::HashSet<usize> {
+) -> foldhash::HashSet<usize> {
     items
         .iter()
         .enumerate()
