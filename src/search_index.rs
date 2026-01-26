@@ -1,5 +1,5 @@
-use serde_json::Value;
 use foldhash::{HashMap, HashSet};
+use serde_json::Value;
 
 /// Inverted index for fast search across 30k+ items
 /// Indexes common fields (id/abstract, type, category) and tokenized words
@@ -38,17 +38,33 @@ impl SearchIndex {
         for (idx, (json, id, type_)) in items.iter().enumerate() {
             // Index primary search fields
             if !id.is_empty() {
-                index.by_id.entry(id.to_lowercase()).or_default().insert(idx);
+                index
+                    .by_id
+                    .entry(id.to_lowercase())
+                    .or_default()
+                    .insert(idx);
             } else if let Some(abstr) = json.get("abstract").and_then(|v| v.as_str()) {
-                index.by_id.entry(abstr.to_lowercase()).or_default().insert(idx);
+                index
+                    .by_id
+                    .entry(abstr.to_lowercase())
+                    .or_default()
+                    .insert(idx);
             }
 
             if !type_.is_empty() {
-                index.by_type.entry(type_.to_lowercase()).or_default().insert(idx);
+                index
+                    .by_type
+                    .entry(type_.to_lowercase())
+                    .or_default()
+                    .insert(idx);
             }
 
             if let Some(category) = json.get("category").and_then(|v| v.as_str()) {
-                index.by_category.entry(category.to_lowercase()).or_default().insert(idx);
+                index
+                    .by_category
+                    .entry(category.to_lowercase())
+                    .or_default()
+                    .insert(idx);
             }
 
             // Recursively index EVERYTHING in the JSON. Note: This covers the fields above,
