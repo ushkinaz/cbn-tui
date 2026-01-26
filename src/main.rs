@@ -750,47 +750,140 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
     f.render_widget(block, area);
 
     if inner_area.width > 0 && inner_area.height > 0 {
-        // Apply 1-symbol horizontal padding within the inner area
-        let horizontal_padding = 1;
-        let content_width = inner_area.width.saturating_sub(horizontal_padding * 2);
-
-        // Calculate the height required when text is wrapped to content_width
-        let mut wrapped_height = 0;
-        for line in &app.details_text.lines {
-            let line_width = line.width() as u16;
-            if line_width == 0 {
-                wrapped_height += 1;
+        // Extract metadata for the header
+        let mut header_rows = Vec::new();
+        if let Some((json, id, type_)) = app.get_selected_item() {
+            let id_val = if !id.is_empty() {
+                id.clone()
             } else {
-                wrapped_height += line_width.div_ceil(content_width);
+                json.get("abstract")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let type_val = if !type_.is_empty() {
+                type_.clone()
+            } else {
+                json.get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let name_val = json
+                .get("name")
+                .and_then(|v| {
+                    if let Some(s) = v.as_str() {
+                        Some(s.to_string())
+                    } else {
+                        v.get("str").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    }
+                })
+                .unwrap_or_default();
+            let cat_val = json
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            let col1_width = 40;
+
+            // Row 1: id and name
+            if !id_val.is_empty() || !name_val.is_empty() {
+                header_rows.push(Line::from(vec![
+                    Span::styled(
+                        format!("{: <width$}", id_val, width = col1_width),
+                        app.theme.text,
+                    ),
+                    Span::styled(name_val, app.theme.text),
+                ]));
+            }
+
+            // Row 2: type and category
+            if !type_val.is_empty() || !cat_val.is_empty() {
+                header_rows.push(Line::from(vec![
+                    Span::styled(
+                        format!("{: <width$}", type_val, width = col1_width),
+                        app.theme.text,
+                    ),
+                    Span::styled(cat_val, app.theme.text),
+                ]));
             }
         }
-        let content_height = wrapped_height;
 
-        let mut scroll_view = ScrollView::new(Size::new(content_width, content_height))
-            .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
-            .horizontal_scrollbar_visibility(ScrollbarVisibility::Never);
+        let mut content_area = inner_area;
+        let horizontal_padding = 1;
 
-        // Match the background of the scroll view buffer to the theme
-        let scroll_area = scroll_view.area();
-        scroll_view.buf_mut().set_style(scroll_area, app.theme.text);
+        if !header_rows.is_empty() {
+            let header_height = header_rows.len() as u16;
 
-        let content_rect = Rect::new(0, 0, content_width, content_height);
-        scroll_view.render_widget(
-            Paragraph::new(app.details_text.clone())
-                .style(app.theme.text)
-                .wrap(Wrap { trim: false }),
-            content_rect,
-        );
+            // Render header with padding
+            let header_render_area = Rect::new(
+                inner_area.x + horizontal_padding,
+                inner_area.y,
+                inner_area.width.saturating_sub(horizontal_padding * 2),
+                header_height,
+            );
+            f.render_widget(Paragraph::new(header_rows), header_render_area);
 
-        // Render ScrollView centered horizontally within inner_area using the padding
-        let scroll_view_area = Rect::new(
-            inner_area.x + horizontal_padding,
-            inner_area.y,
-            content_width,
-            inner_area.height,
-        );
+            // Render horizontal separator line that merges with borders
+            let separator_y = inner_area.y + header_height;
+            if separator_y < area.y + area.height - 1 {
+                let separator_line = format!("├{}┤", "─".repeat(inner_area.width as usize));
+                f.render_widget(
+                    Paragraph::new(separator_line).style(app.theme.border),
+                    Rect::new(area.x, separator_y, area.width, 1),
+                );
+                content_area = Rect::new(
+                    inner_area.x,
+                    separator_y + 1,
+                    inner_area.width,
+                    inner_area.height.saturating_sub(header_height + 1),
+                );
+            }
+        }
 
-        f.render_stateful_widget(scroll_view, scroll_view_area, &mut app.details_scroll_state);
+        // Apply 1-symbol horizontal padding within the content area
+        let content_width = content_area.width.saturating_sub(horizontal_padding * 2);
+
+        if content_width > 0 && content_area.height > 0 {
+            // Calculate the height required when text is wrapped to content_width
+            let mut wrapped_height = 0;
+            for line in &app.details_text.lines {
+                let line_width = line.width() as u16;
+                if line_width == 0 {
+                    wrapped_height += 1;
+                } else {
+                    wrapped_height += line_width.div_ceil(content_width);
+                }
+            }
+            let content_height = wrapped_height;
+
+            let mut scroll_view = ScrollView::new(Size::new(content_width, content_height))
+                .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
+                .horizontal_scrollbar_visibility(ScrollbarVisibility::Never);
+
+            // Match the background of the scroll view buffer to the theme
+            let scroll_area = scroll_view.area();
+            scroll_view.buf_mut().set_style(scroll_area, app.theme.text);
+
+            let content_rect = Rect::new(0, 0, content_width, content_height);
+            scroll_view.render_widget(
+                Paragraph::new(app.details_text.clone())
+                    .style(app.theme.text)
+                    .wrap(Wrap { trim: false }),
+                content_rect,
+            );
+
+            // Render ScrollView centered horizontally within content_area using the padding
+            let scroll_view_area = Rect::new(
+                content_area.x + horizontal_padding,
+                content_area.y,
+                content_width,
+                content_area.height,
+            );
+
+            f.render_stateful_widget(scroll_view, scroll_view_area, &mut app.details_scroll_state);
+        }
     }
 }
 
