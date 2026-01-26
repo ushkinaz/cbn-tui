@@ -20,10 +20,10 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect, Size},
+    layout::{Alignment, Constraint, Direction, Layout, Rect, Size},
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -60,17 +60,70 @@ struct Args {
     theme: Option<String>,
 }
 
-// GameBuild, Root, and other non-ui structs...
+/// Core metadata for a game build, flattened from various JSON sources.
+#[derive(Debug, Clone)]
+struct BuildInfo {
+    /// The unique build identifier (e.g., "2024-01-01" or "v0.9.1").
+    build_number: String,
+    /// The human-readable tag name (often matches build_number or is more descriptive).
+    tag_name: String,
+    /// Whether this is a prerelease/nightly build.
+    prerelease: bool,
+    /// ISO 8601 creation timestamp.
+    created_at: String,
+}
+
+/// The root structure of the game data JSON (`all.json`).
 #[derive(Debug, Deserialize)]
 struct Root {
+    /// Flattened build metadata.
+    #[serde(flatten)]
+    build: BuildInfo,
+    /// The actual game data items.
     data: Vec<Value>,
 }
 
-#[derive(Debug, Deserialize)]
-struct GameBuild {
-    build_number: String,
-    prerelease: bool,
-    created_at: String,
+impl<'de> Deserialize<'de> for BuildInfo {
+    /// Custom deserializer to flatten the potential nesting of `release.tag_name`
+    /// from Github-style JSON responses into a flat domain model.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Proxy {
+            build_number: String,
+            prerelease: Option<bool>,
+            created_at: Option<String>,
+            release: Option<Value>,
+        }
+
+        let proxy = Proxy::deserialize(deserializer)?;
+
+        let mut tag_name = proxy.build_number.clone();
+        let mut prerelease = proxy.prerelease.unwrap_or(false);
+        let mut created_at = proxy.created_at.unwrap_or_default();
+
+        // Extract flattened fields from the optional nested `release` object
+        if let Some(release) = proxy.release {
+            if let Some(tag) = release.get("tag_name").and_then(|v| v.as_str()) {
+                tag_name = tag.to_string();
+            }
+            if let Some(pre) = release.get("prerelease").and_then(|v| v.as_bool()) {
+                prerelease = pre;
+            }
+            if let Some(created) = release.get("created_at").and_then(|v| v.as_str()) {
+                created_at = created.to_string();
+            }
+        }
+
+        Ok(BuildInfo {
+            build_number: proxy.build_number,
+            tag_name,
+            prerelease,
+            created_at,
+        })
+    }
 }
 
 /// Current input mode for the application.
@@ -100,6 +153,14 @@ struct AppState {
     input_mode: InputMode,
     /// Theme configuration
     theme: theme::ThemeConfig,
+    /// Resolved game version (from JSON tag_name)
+    game_version: String,
+    /// App version string
+    app_version: String,
+    /// Number of items in the full dataset
+    total_items: usize,
+    /// Time taken to build the index
+    index_time_ms: f64,
     /// Scroll state for details pane
     details_scroll_state: ScrollViewState,
     /// Cached highlighted JSON text for the current selection
@@ -108,6 +169,8 @@ struct AppState {
     details_line_count: usize,
     /// Flag to quit app
     should_quit: bool,
+    /// Whether help overlay is visible
+    show_help: bool,
 }
 
 impl AppState {
@@ -115,6 +178,10 @@ impl AppState {
         indexed_items: Vec<(Value, String, String)>,
         search_index: search_index::SearchIndex,
         theme: theme::ThemeConfig,
+        game_version: String,
+        app_version: String,
+        total_items: usize,
+        index_time_ms: f64,
     ) -> Self {
         let filtered_indices: Vec<usize> = (0..indexed_items.len()).collect();
         let mut list_state = ListState::default();
@@ -133,10 +200,15 @@ impl AppState {
             filter_cursor: 0,
             input_mode: InputMode::Normal,
             theme,
+            game_version,
+            app_version,
+            total_items,
+            index_time_ms,
             details_scroll_state: ScrollViewState::default(),
             details_text: Text::default(),
             details_line_count: 0,
             should_quit: false,
+            show_help: false,
         };
         app.refresh_details();
         app
@@ -170,9 +242,10 @@ impl AppState {
         }
 
         if let Some(selected) = self.list_state.selected()
-            && selected >= len {
-                self.list_state.select(Some(len - 1));
-            }
+            && selected >= len
+        {
+            self.list_state.select(Some(len - 1));
+        }
     }
 
     /// Moves selection by `direction` (+1 or -1) and refreshes details.
@@ -271,6 +344,8 @@ impl AppState {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    let app_version = format!("v{}", env!("CARGO_PKG_VERSION"));
+
     // Theme selection
     let theme_name = args.theme.as_deref().unwrap_or("dracula");
     let theme_enum = theme::Theme::from_str(theme_name).map_err(anyhow::Error::msg)?;
@@ -306,7 +381,7 @@ fn main() -> Result<()> {
             fs::read_to_string(&builds_path)?
         };
 
-        let mut builds: Vec<GameBuild> = serde_json::from_str(&content)?;
+        let mut builds: Vec<BuildInfo> = serde_json::from_str(&content)?;
         // List in order of creation (newest first)
         builds.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
@@ -321,10 +396,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let file_path = if let Some(file) = args.file {
-        file
+    let requested_version = args.game.clone();
+    let file_path = if let Some(file) = args.file.as_ref() {
+        file.clone()
     } else {
-        let game_version = args.game;
+        let game_version = requested_version.clone();
         let project_dirs = directories::ProjectDirs::from("com", "cataclysmbn", "cbn-tui")
             .ok_or_else(|| anyhow::anyhow!("Could not determine cache directory"))?;
         let version_cache_dir = project_dirs.cache_dir().join(&game_version);
@@ -380,7 +456,25 @@ fn main() -> Result<()> {
     let reader = io::BufReader::new(file);
     let root: Root = serde_json::from_reader(reader)?;
 
-    println!("Building search index for {} items...", root.data.len());
+    let total_items = root.data.len();
+
+    // Determine resolved version and version label
+    let build_number = &root.build.build_number;
+    let resolved_version = &root.build.tag_name;
+
+    let game_version_label = if args.file.is_some() && args.game == "nightly" {
+        // If loading from file and game is default, just show the file's version
+        resolved_version.clone()
+    } else {
+        let requested = requested_version;
+        if !requested.is_empty() && requested != *build_number && requested != *resolved_version {
+            format!("{}:{}", requested, resolved_version)
+        } else {
+            resolved_version.clone()
+        }
+    };
+
+    println!("Building search index for {} items...", total_items);
     let start = std::time::Instant::now();
 
     // Convert to indexed format (json, id, type)
@@ -407,8 +501,8 @@ fn main() -> Result<()> {
 
     // Build search index
     let search_index = search_index::SearchIndex::build(&indexed_items);
-    let index_time = start.elapsed();
-    println!("Index built in {:.2}ms", index_time.as_secs_f64() * 1000.0);
+    let index_time_ms = start.elapsed().as_secs_f64() * 1000.0;
+    println!("Index built in {:.2}ms", index_time_ms);
 
     // Setup terminal
     enable_raw_mode()?;
@@ -418,7 +512,15 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app state
-    let mut app = AppState::new(indexed_items, search_index, theme);
+    let mut app = AppState::new(
+        indexed_items,
+        search_index,
+        theme,
+        game_version_label,
+        app_version,
+        total_items,
+        index_time_ms,
+    );
 
     // Run app
     let res = run_app(&mut terminal, &mut app);
@@ -473,6 +575,16 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
         app.update_filter();
     }
 
+    if app.show_help {
+        match code {
+            KeyCode::Char('?') | KeyCode::Esc => {
+                app.show_help = false;
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match app.input_mode {
         InputMode::Normal => match code {
             KeyCode::Char('q') | KeyCode::Esc => {
@@ -481,6 +593,10 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
 
             KeyCode::Char('/') => {
                 app.input_mode = InputMode::Filtering;
+            }
+
+            KeyCode::Char('?') => {
+                app.show_help = true;
             }
 
             KeyCode::Up | KeyCode::Char('k') if !modifiers.contains(KeyModifiers::CONTROL) => {
@@ -545,6 +661,7 @@ fn ui(f: &mut Frame, app: &mut AppState) {
         .constraints([
             Constraint::Min(0),    // Main area - takes all space
             Constraint::Length(3), // Filter input - fixed 3 lines
+            Constraint::Length(1), // Status bar
         ])
         .split(f.area());
 
@@ -561,6 +678,13 @@ fn ui(f: &mut Frame, app: &mut AppState) {
 
     // Render filter input
     render_filter(f, app, chunks[1]);
+
+    // Render status bar
+    render_status_bar(f, app, chunks[2]);
+
+    if app.show_help {
+        render_help_overlay(f, app);
+    }
 }
 
 fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
@@ -696,6 +820,143 @@ fn render_filter(f: &mut Frame, app: &mut AppState, area: Rect) {
         let cursor_y = inner.y;
         f.set_cursor_position((cursor_x, cursor_y));
     }
+}
+
+fn render_status_bar(f: &mut Frame, app: &mut AppState, area: Rect) {
+    let area = Rect::new(
+        area.x + 1,
+        area.y,
+        area.width.saturating_sub(2),
+        area.height,
+    );
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
+        ])
+        .split(area);
+
+    render_status_bar_shortcuts(f, app, chunks[0]);
+    render_status_bar_operational(f, app, chunks[1]);
+    render_status_bar_versions(f, app, chunks[2]);
+}
+
+fn render_status_bar_shortcuts(f: &mut Frame, app: &mut AppState, area: Rect) {
+    let key_style = app.theme.title;
+    let bar_style = app.theme.text.add_modifier(Modifier::DIM);
+
+    let shortcuts = Line::from(vec![
+        Span::styled("/ ", key_style),
+        Span::raw("filter  "),
+        Span::styled("? ", key_style),
+        Span::raw("help  "),
+        Span::styled("Esc ", key_style),
+        Span::raw("quit"),
+    ]);
+
+    f.render_widget(
+        Paragraph::new(shortcuts)
+            .style(bar_style)
+            .alignment(Alignment::Left),
+        area,
+    );
+}
+
+fn render_status_bar_operational(f: &mut Frame, app: &mut AppState, area: Rect) {
+    let bar_style = app.theme.text.add_modifier(Modifier::DIM);
+    let status = Line::from(format!(
+        "Items: {} | Index: {:.2}ms",
+        app.total_items, app.index_time_ms
+    ));
+
+    f.render_widget(
+        Paragraph::new(status)
+            .style(bar_style)
+            .alignment(Alignment::Center),
+        area,
+    );
+}
+
+fn render_status_bar_versions(f: &mut Frame, app: &mut AppState, area: Rect) {
+    let bar_style = app.theme.text.add_modifier(Modifier::DIM);
+    let versions = Line::from(format!(
+        "Game: {}  App: {}",
+        app.game_version, app.app_version
+    ));
+
+    f.render_widget(
+        Paragraph::new(versions)
+            .style(bar_style)
+            .alignment(Alignment::Right),
+        area,
+    );
+}
+
+fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
+    let area = f.area();
+    let popup_width = area.width.min(70).saturating_sub(4);
+    let popup_height = 11.min(area.height.saturating_sub(2));
+    if popup_width == 0 || popup_height == 0 {
+        return;
+    }
+    let popup_rect = Rect::new(
+        area.x + (area.width.saturating_sub(popup_width)) / 2,
+        area.y + (area.height.saturating_sub(popup_height)) / 2,
+        popup_width,
+        popup_height,
+    );
+
+    f.render_widget(Clear, popup_rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(app.theme.border_selected)
+        .style(app.theme.border_selected.bg(app.theme.background))
+        .title(" Help ").border_type(ratatui::widgets::BorderType::Double)
+        .title_style(app.theme.title);
+
+    let inner_area = block.inner(popup_rect);
+    f.render_widget(block, popup_rect);
+
+    // Add 1 char padding
+    let content_area = Rect::new(
+        inner_area.x + 1,
+        inner_area.y + 1,
+        inner_area.width.saturating_sub(2),
+        inner_area.height.saturating_sub(2),
+    );
+
+    let help_items = vec![
+        ("/", "filter items"),
+        ("Up | k", "selection up"),
+        ("Down | j", "selection down"),
+        ("PgUp | Ctrl+k", "scroll JSON up"),
+        ("PgDown | Ctrl+j", "scroll JSON down"),
+        ("?", "this help"),
+        ("q", "quit"),
+        ("Esc", "back / quit"),
+    ];
+
+    let key_style = app.theme.title;
+    let desc_style = app.theme.text;
+
+    let mut lines = Vec::new();
+    for (key, desc) in help_items {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{: <18}", key), key_style),
+            Span::styled(desc, desc_style),
+        ]));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(app.theme.text)
+            .wrap(Wrap { trim: true }),
+        content_area,
+    );
 }
 
 /// Applies syntax highlighting to JSON text using theme-consistent colors.
@@ -926,7 +1187,15 @@ mod tests {
         ];
         let search_index = search_index::SearchIndex::build(&items);
         let theme = theme::dracula_theme();
-        let mut app = AppState::new(items, search_index, theme);
+        let mut app = AppState::new(
+            items,
+            search_index,
+            theme,
+            "test".to_string(),
+            "v0.0.0".to_string(),
+            2,
+            0.0,
+        );
 
         // Initial state
         assert_eq!(app.input_mode, InputMode::Normal);
@@ -961,7 +1230,15 @@ mod tests {
         ];
         let search_index = search_index::SearchIndex::build(&items);
         let theme = theme::dracula_theme();
-        let mut app = AppState::new(items, search_index, theme);
+        let mut app = AppState::new(
+            items,
+            search_index,
+            theme,
+            "test".to_string(),
+            "v0.0.0".to_string(),
+            2,
+            0.0,
+        );
 
         // Switch to the filtering mode
         handle_key_event(&mut app, KeyCode::Char('/'), KeyModifiers::empty());
