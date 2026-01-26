@@ -626,6 +626,16 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
                 app.scroll_details_down();
             }
 
+            KeyCode::Char(c)
+                if c.is_alphanumeric()
+                    && !modifiers.contains(KeyModifiers::CONTROL)
+                    && !modifiers.contains(KeyModifiers::ALT) =>
+            {
+                app.input_mode = InputMode::Filtering;
+                app.filter_move_to_end();
+                apply_filter_edit(app, |app| app.filter_add_char(c));
+            }
+
             _ => {}
         },
         InputMode::Filtering => match code {
@@ -1392,5 +1402,34 @@ mod tests {
         // Exit filtering mode with Esc
         handle_key_event(&mut app, KeyCode::Esc, KeyModifiers::empty());
         assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_handle_key_event_autofocus_filter() {
+        let items = vec![
+            (json!({"id": "apple"}), "apple".to_string(), "t".to_string()),
+            (
+                json!({"id": "banana"}),
+                "banana".to_string(),
+                "t".to_string(),
+            ),
+        ];
+        let search_index = search_index::SearchIndex::build(&items);
+        let theme = theme::dracula_theme();
+        let mut app = AppState::new(
+            items,
+            search_index,
+            theme,
+            "test".to_string(),
+            "v0.0.0".to_string(),
+            2,
+            0.0,
+        );
+
+        handle_key_event(&mut app, KeyCode::Char('a'), KeyModifiers::empty());
+        assert_eq!(app.input_mode, InputMode::Filtering);
+        assert_eq!(app.filter_text, "a");
+        assert_eq!(app.filter_cursor, 1);
+        assert_eq!(app.filtered_indices.len(), 2);
     }
 }
