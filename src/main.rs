@@ -37,7 +37,13 @@ mod search_index;
 mod theme;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    author,
+    version,
+    about,
+    long_about = "CBN-TUI: A terminal user interface for browsing Cataclysm: Bright Nights game data.\n\
+                  Supports searching through items, monsters, and other game entities with a built-in search index."
+)]
 struct Args {
     /// Path to the all.json file
     #[arg(short, long)]
@@ -897,8 +903,8 @@ fn render_status_bar_versions(f: &mut Frame, app: &mut AppState, area: Rect) {
 
 fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
     let area = f.area();
-    let popup_width = area.width.min(70).saturating_sub(4);
-    let popup_height = 11.min(area.height.saturating_sub(2));
+    let popup_width = area.width.min(76).saturating_sub(4);
+    let popup_height = 24.min(area.height.saturating_sub(2));
     if popup_width == 0 || popup_height == 0 {
         return;
     }
@@ -915,21 +921,29 @@ fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
         .borders(Borders::ALL)
         .border_style(app.theme.border_selected)
         .style(app.theme.border_selected.bg(app.theme.background))
-        .title(" Help ").border_type(ratatui::widgets::BorderType::Double)
+        .title(" Help ")
+        .border_type(ratatui::widgets::BorderType::Double)
         .title_style(app.theme.title);
 
     let inner_area = block.inner(popup_rect);
     f.render_widget(block, popup_rect);
 
-    // Add 1 char padding
-    let content_area = Rect::new(
-        inner_area.x + 1,
-        inner_area.y + 1,
-        inner_area.width.saturating_sub(2),
-        inner_area.height.saturating_sub(2),
-    );
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(10), // Navigation
+            Constraint::Length(1),  // Spacer
+            Constraint::Min(0),     // Search Syntax
+        ])
+        .margin(1)
+        .split(inner_area);
 
-    let help_items = vec![
+    let key_style = app.theme.title;
+    let desc_style = app.theme.text;
+    let header_style = key_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+
+    // 1. Navigation Section
+    let nav_items = vec![
         ("/", "filter items"),
         ("Up | k", "selection up"),
         ("Down | j", "selection down"),
@@ -940,23 +954,48 @@ fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
         ("Esc", "back / quit"),
     ];
 
-    let key_style = app.theme.title;
-    let desc_style = app.theme.text;
-
-    let mut lines = Vec::new();
-    for (key, desc) in help_items {
-        lines.push(Line::from(vec![
+    let mut nav_lines = vec![Line::from(Span::styled("Navigation", header_style))];
+    for (key, desc) in nav_items {
+        nav_lines.push(Line::from(vec![
             Span::styled(format!("{: <18}", key), key_style),
             Span::styled(desc, desc_style),
         ]));
     }
+    f.render_widget(Paragraph::new(nav_lines), chunks[0]);
 
-    f.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.text)
-            .wrap(Wrap { trim: true }),
-        content_area,
-    );
+    // 2. Search Syntax Section
+    let syntax_lines = vec![
+        Line::from(Span::styled("Search Syntax", header_style)),
+        Line::from(vec![
+            Span::styled("word", key_style),
+            Span::styled(" - generic search in all fields", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("t:gun", key_style),
+            Span::styled(
+                " - filter by type (shortcuts: i:id, t:type, c:cat)",
+                desc_style,
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("bash.str_min:30", key_style),
+            Span::styled(" - filter by nested field", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("'term'", key_style),
+            Span::styled(" - exact match (surround with single quotes)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("term1 term2", key_style),
+            Span::styled(" - AND logic (matches both terms)", desc_style),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Example: ", key_style.add_modifier(Modifier::BOLD)),
+            Span::styled("t:gun ammo:rpg", desc_style),
+        ]),
+    ];
+    f.render_widget(Paragraph::new(syntax_lines), chunks[2]);
 }
 
 /// Applies syntax highlighting to JSON text using theme-consistent colors.
