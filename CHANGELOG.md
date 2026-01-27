@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New Features
 
+- **Scrollable JSON details**: Added a scrollable details pane with a metadata header for key fields.
+- **Multiple themes**: Choose from Dracula, Solarized, Gruvbox, and Everforest Light.
+- **Status bar and help overlay**: New status bar plus a help overlay with search syntax guidance.
+
+### Changes
+
+- **Faster search**: Optimized search indexing and term intersection for quicker filtering.
+- **Improved filtering flow**: Typing auto-focuses the filter input, with clearer placeholder text.
+- **UI polish**: Refined layout ratios, list styling, and labels for clearer navigation.
+- **Default game version**: Nightly is now the default game version for downloads.
+
+### Bugfixes
+
+- Fixed selection handling when filters return no results.
+- Fixed filter cursor rendering edge cases.
+
+## [0.3.0] - 2026-01-24
+
+### New Features
+
 - **Advanced search syntax**: Support for recursive field matching and exact match queries.
 - **Improved startup time**: Added caching and expiration logic for game data to significantly reduce startup time for already viewed versions.
 - **Automatic data download**: Integrated downloading of game data with `--game` and `--force` options.
