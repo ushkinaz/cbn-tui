@@ -56,13 +56,16 @@ pub(crate) fn parse_search_term(term: &str) -> SearchTerm {
 ///
 /// For exact matches (`exact: true`), the value (converted to string) must be identical to the pattern.
 /// For pattern matches (`exact: false`), the value must contain the pattern as a substring (case-insensitive for strings).
+///
+/// **Optimization Note:** If `exact` is false, `pattern` MUST be passed in lowercase.
 pub(crate) fn matches_value(value: &Value, pattern: &str, exact: bool) -> bool {
     match value {
         Value::String(s) => {
             if exact {
                 s == pattern
             } else {
-                s.to_lowercase().contains(&pattern.to_lowercase())
+                // pattern is already lowercased by caller
+                s.to_lowercase().contains(pattern)
             }
         }
         Value::Number(n) => {
@@ -81,7 +84,8 @@ pub(crate) fn matches_value(value: &Value, pattern: &str, exact: bool) -> bool {
             if exact {
                 b_str == pattern
             } else {
-                b_str.to_lowercase().contains(&pattern.to_lowercase())
+                // pattern is already lowercased by caller
+                b_str.to_lowercase().contains(pattern)
             }
         }
         Value::Array(arr) => {
@@ -96,7 +100,8 @@ pub(crate) fn matches_value(value: &Value, pattern: &str, exact: bool) -> bool {
             if exact {
                 pattern == "null"
             } else {
-                "null".contains(&pattern.to_lowercase())
+                // pattern is already lowercased by caller
+                "null".contains(pattern)
             }
         }
     }
@@ -104,6 +109,8 @@ pub(crate) fn matches_value(value: &Value, pattern: &str, exact: bool) -> bool {
 
 /// Navigates to a specific field in the JSON (supporting dot-notation like "bash.str_min")
 /// and checks if any value found at that path matches the criteria.
+///
+/// **Optimization Note:** If `exact` is false, `pattern` MUST be passed in lowercase.
 pub(crate) fn matches_field(json: &Value, field_name: &str, pattern: &str, exact: bool) -> bool {
     // Handle nested field access (e.g., "bash.str_min")
     let parts: Vec<&str> = field_name.split('.').collect();
@@ -236,10 +243,18 @@ fn slow_search_classifier(
     pattern: &str,
     exact: bool,
 ) -> foldhash::HashSet<usize> {
+    // Optimization: Pre-calculate the pattern to match against.
+    // If not exact, we lowercase it once here instead of for every value check.
+    let pattern_owned = if exact {
+        pattern.to_string()
+    } else {
+        pattern.to_lowercase()
+    };
+
     items
         .iter()
         .enumerate()
-        .filter(|(_, (json, _, _))| matches_field(json, classifier, pattern, exact))
+        .filter(|(_, (json, _, _))| matches_field(json, classifier, &pattern_owned, exact))
         .map(|(idx, _)| idx)
         .collect()
 }
@@ -250,10 +265,18 @@ fn slow_search_no_classifier(
     pattern: &str,
     exact: bool,
 ) -> foldhash::HashSet<usize> {
+    // Optimization: Pre-calculate the pattern to match against.
+    // If not exact, we lowercase it once here instead of for every value check.
+    let pattern_owned = if exact {
+        pattern.to_string()
+    } else {
+        pattern.to_lowercase()
+    };
+
     items
         .iter()
         .enumerate()
-        .filter(|(_, (json, _, _))| matches_value(json, pattern, exact))
+        .filter(|(_, (json, _, _))| matches_value(json, &pattern_owned, exact))
         .map(|(idx, _)| idx)
         .collect()
 }
@@ -317,10 +340,11 @@ mod tests {
 
     #[test]
     fn test_matches_value_string_pattern() {
-        assert!(matches_value(&json!("EMITTER"), "EMIT", false));
-        assert!(matches_value(&json!("EMITTER"), "ITTER", false));
+        // When exact=false, pattern must be lowercase
+        assert!(matches_value(&json!("EMITTER"), "emit", false));
+        assert!(matches_value(&json!("EMITTER"), "itter", false));
         assert!(matches_value(&json!("EMITTER"), "emitter", false));
-        assert!(!matches_value(&json!("EMITTER"), "TRANSMIT", false));
+        assert!(!matches_value(&json!("EMITTER"), "transmit", false));
     }
 
     #[test]
@@ -348,10 +372,11 @@ mod tests {
     #[test]
     fn test_matches_value_array() {
         let arr = json!(["TRANSPARENT", "EMITTER", "MINEABLE"]);
-        assert!(matches_value(&arr, "EMITTER", false));
-        assert!(matches_value(&arr, "EMIT", false));
-        assert!(matches_value(&arr, "ITTER", false));
-        assert!(!matches_value(&arr, "TRANSMIT", false));
+        // Pattern must be lowercase for non-exact match
+        assert!(matches_value(&arr, "emitter", false));
+        assert!(matches_value(&arr, "emit", false));
+        assert!(matches_value(&arr, "itter", false));
+        assert!(!matches_value(&arr, "transmit", false));
     }
 
     #[test]
@@ -738,5 +763,43 @@ mod tests {
             assert!(idx < 10);
             assert!(idx % 2 == 0);
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_slow_search_performance() {
+        use std::time::Instant;
+        use serde_json::json;
+
+        // Generate 10,000 items with nested structure
+        let mut items = Vec::new();
+        for i in 0..10000 {
+            items.push((
+                json!({
+                    "id": format!("item_{}", i),
+                    "description": "This is a test description with some random words like zombie, alien, and robot.",
+                    "nested": {
+                        "level1": {
+                            "level2": {
+                                "value": format!("value_{}", i)
+                            }
+                        }
+                    },
+                    "array": ["one", "two", "three", "four", "five"]
+                }),
+                format!("item_{}", i),
+                "item".to_string()
+            ));
+        }
+
+        let start = Instant::now();
+        // Run 100 searches
+        // "description:zombie" will force a scan of all items checking the "description" field.
+        // This exercises matches_field -> matches_value recursion.
+        for _ in 0..100 {
+             let _ = slow_search_classifier(&items, "description", "zombie", false);
+        }
+        let duration = start.elapsed();
+        println!("Performance test time: {:?}", duration);
     }
 }
