@@ -20,10 +20,13 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout, Rect, Size},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect, Size},
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
+    },
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -798,32 +801,50 @@ fn ui(f: &mut Frame, app: &mut AppState) {
 }
 
 fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
-    let items = app.filtered_indices.iter().map(|&idx| {
-        let (json, id, type_) = &app.indexed_items[idx];
-        let display_name = display_name_for_item(json, id, type_);
+    let items = app
+        .filtered_indices
+        .iter()
+        .map(|&idx| {
+            let (json, id, type_) = &app.indexed_items[idx];
+            let display_name = display_name_for_item(json, id, type_);
 
-        let type_label = Line::from(vec![
-            Span::styled(format!("{} ", type_), app.theme.title),
-            Span::raw(display_name),
-        ]);
-        ListItem::new(type_label)
-    });
+            let type_label = Line::from(vec![
+                Span::styled(format!("{} ", type_), app.theme.title),
+                Span::raw(display_name),
+            ]);
+            ListItem::new(type_label)
+        });
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(app.theme.border_selected)
+        .title_style(app.theme.title)
+        .title(format!(" Items ({}) ", app.filtered_indices.len()))
+        .title_bottom(Line::from(" up / down ").right_aligned())
+        .title_alignment(Alignment::Left)
+        .style(app.theme.list_normal);
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(app.theme.border_selected)
-                .title_style(app.theme.title)
-                .title(format!(" Items ({}) ", app.filtered_indices.len()))
-                .title_bottom(Line::from(" up / down ").right_aligned())
-                .title_alignment(Alignment::Left),
-        )
+        .block(block)
         .style(app.theme.list_normal)
         .scroll_padding(2)
         .highlight_style(app.theme.list_selected);
 
     f.render_stateful_widget(list, area, &mut app.list_state);
+
+    // Render scrollbar
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+    let mut scrollbar_state = ScrollbarState::new(app.filtered_indices.len())
+        .position(app.list_state.selected().unwrap_or(0));
+
+    f.render_stateful_widget(
+        scrollbar,
+        area.inner(Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut scrollbar_state,
+    );
 }
 
 fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
