@@ -800,21 +800,7 @@ fn ui(f: &mut Frame, app: &mut AppState) {
 fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
     let items = app.filtered_indices.iter().map(|&idx| {
         let (json, id, type_) = &app.indexed_items[idx];
-        let display_name = if !id.is_empty() {
-            id.clone()
-        } else if let Some(abstract_) = json.get("abstract").and_then(|v| v.as_str()) {
-            format!("(abs) {}", abstract_)
-        } else if let Some(name) = json.get("name") {
-            if let Some(name_str) = name.get("str").and_then(|v| v.as_str()) {
-                name_str.to_string()
-            } else if let Some(name_str) = name.as_str() {
-                name_str.to_string()
-            } else {
-                "(?)".to_string()
-            }
-        } else {
-            "(?)".to_string()
-        };
+        let display_name = display_name_for_item(json, id, type_);
 
         let type_label = Line::from(vec![
             Span::styled(format!("{} ", type_), app.theme.title),
@@ -831,7 +817,7 @@ fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
                 .title_style(app.theme.title)
                 .title(format!(" Items ({}) ", app.filtered_indices.len()))
                 .title_bottom(Line::from(" up / down ").right_aligned())
-                .title_alignment(ratatui::layout::Alignment::Left),
+                .title_alignment(Alignment::Left),
         )
         .style(app.theme.list_normal)
         .scroll_padding(2)
@@ -875,13 +861,8 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
             };
             let name_val = json
                 .get("name")
-                .and_then(|v| {
-                    if let Some(s) = v.as_str() {
-                        Some(s.to_string())
-                    } else {
-                        v.get("str").and_then(|v| v.as_str()).map(|s| s.to_string())
-                    }
-                })
+                .and_then(|v| name_value(v))
+                .or_else(|| fallback_display_name(json, id, type_))
                 .unwrap_or_default();
             let cat_val = json
                 .get("category")
@@ -1193,6 +1174,84 @@ fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
         ]),
     ];
     f.render_widget(Paragraph::new(syntax_lines), chunks[2]);
+}
+
+fn display_name_for_item(json: &Value, id: &str, type_: &str) -> String {
+    if !id.is_empty() {
+        return id.to_string();
+    }
+
+    if let Some(abstract_) = json.get("abstract").and_then(|v| v.as_str()) {
+        return format!("(abs) {}", abstract_);
+    }
+
+    if let Some(name) = json.get("name").and_then(name_value) {
+        if !name.is_empty() {
+            return name;
+        }
+    }
+
+    if let Some(fallback) = fallback_display_name(json, id, type_) {
+        return fallback;
+    }
+
+    "(?)".to_string()
+}
+
+fn fallback_display_name(json: &Value, id: &str, type_: &str) -> Option<String> {
+    if !id.is_empty() {
+        return None;
+    }
+
+    match type_ {
+        "recipe" => {
+            let result = json.get("result").and_then(|v| v.as_str()).unwrap_or("");
+            if result.is_empty() {
+                return None;
+            }
+            let suffix = json.get("id_suffix").and_then(|v| v.as_str()).unwrap_or("");
+            if suffix.is_empty() {
+                Some(format!("result: {}", result))
+            } else {
+                Some(format!("result: {} (suffix: {})", result, suffix))
+            }
+        }
+        "uncraft" => {
+            if let Some(result) = json.get("result").and_then(|v| v.as_str()) {
+                if !result.is_empty() {
+                    return Some(format!("result: {}", result));
+                }
+            }
+            None
+        }
+        "profession_item_substitutions" => {
+            if let Some(trait_) = json.get("trait").and_then(|v| v.as_str()) {
+                if !trait_.is_empty() {
+                    return Some(format!("trait: {}", trait_));
+                }
+            }
+            if let Some(item) = json.get("item").and_then(|v| v.as_str()) {
+                if !item.is_empty() {
+                    return Some(format!("item: {}", item));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn name_value(value: &Value) -> Option<String> {
+    if let Some(name_str) = value.as_str() {
+        return Some(name_str.to_string());
+    }
+    if let Some(name_str) = value.get("str").and_then(|v| v.as_str()) {
+        return Some(name_str.to_string());
+    }
+    if let Some(name_str) = value.get("str_sp").and_then(|v| v.as_str()) {
+        return Some(name_str.to_string());
+    }
+    None
 }
 
 /// Applies syntax highlighting to JSON text using theme-consistent colors.
