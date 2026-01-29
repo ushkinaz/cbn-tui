@@ -9,10 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New Features
 
+- **Advanced search syntax**: Support for recursive field matching and exact match queries.
+- **Automatic data download**: Integrated downloading of game data with `--game` and `--force` options.
 - **Scrollable JSON details**: Added a scrollable details pane with a metadata header for key fields.
 - **Filter history navigation**: Cycle through previous filters without retyping.
 - **Multiple themes**: Choose from Dracula, Solarized, Gruvbox, and Everforest Light.
 - **Status bar and help overlay**: New status bar plus a help overlay with search syntax guidance.
+- **Improved startup time**: Added caching and expiration logic for game data to significantly reduce startup time for already viewed versions.
+- **Game version listing**: New `--game-versions` flag to list available game builds.
 
 ### Changes
 
@@ -26,15 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed missing labels for entries without names.
 - Fixed selection handling when filters return no results.
 - Fixed filter cursor rendering edge cases.
-
-## [0.3.0] - 2026-01-24
-
-### New Features
-
-- **Advanced search syntax**: Support for recursive field matching and exact match queries.
-- **Improved startup time**: Added caching and expiration logic for game data to significantly reduce startup time for already viewed versions.
-- **Automatic data download**: Integrated downloading of game data with `--game` and `--force` options.
-- **Game version listing**: New `--game-versions` flag to list available game builds.
 
 ## [0.2.0] - 2026-01-23
 
