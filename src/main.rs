@@ -177,9 +177,18 @@ struct AppState {
     should_quit: bool,
     /// Whether help overlay is visible
     show_help: bool,
+    /// Previous search expressions
+    filter_history: Vec<String>,
+    /// Current index in history during navigation
+    history_index: Option<usize>,
+    /// Saved input when starting history navigation
+    stashed_input: String,
+    /// Path to history file
+    history_path: std::path::PathBuf,
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         indexed_items: Vec<(Value, String, String)>,
         search_index: search_index::SearchIndex,
@@ -188,6 +197,7 @@ impl AppState {
         app_version: String,
         total_items: usize,
         index_time_ms: f64,
+        history_path: std::path::PathBuf,
     ) -> Self {
         let filtered_indices: Vec<usize> = (0..indexed_items.len()).collect();
         let mut list_state = ListState::default();
@@ -215,9 +225,32 @@ impl AppState {
             details_line_count: 0,
             should_quit: false,
             show_help: false,
+            filter_history: Vec::new(),
+            history_index: None,
+            stashed_input: String::new(),
+            history_path,
         };
+        app.load_history();
         app.refresh_details();
         app
+    }
+
+    fn load_history(&mut self) {
+        if let Ok(content) = fs::read_to_string(&self.history_path) {
+            self.filter_history = content
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|s| s.to_string())
+                .collect();
+        }
+    }
+
+    fn save_history(&self) {
+        if let Some(parent) = self.history_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let content = self.filter_history.join("\n");
+        let _ = fs::write(&self.history_path, content);
     }
 
     fn refresh_details(&mut self) {
@@ -344,6 +377,13 @@ impl AppState {
             self.list_state.select(Some(0));
         }
         self.refresh_details();
+    }
+
+    #[cfg(test)]
+    fn clear_filter(&mut self) {
+        self.filter_text.clear();
+        self.filter_cursor = 0;
+        self.update_filter();
     }
 }
 
@@ -510,6 +550,11 @@ fn main() -> Result<()> {
     let index_time_ms = start.elapsed().as_secs_f64() * 1000.0;
     println!("Index built in {:.2}ms", index_time_ms);
 
+    // Define history path
+    let project_dirs = directories::ProjectDirs::from("com", "cataclysmbn", "cbn-tui")
+        .ok_or_else(|| anyhow::anyhow!("Could not determine data directory"))?;
+    let history_path = project_dirs.data_dir().join("history.txt");
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -526,6 +571,7 @@ fn main() -> Result<()> {
         app_version,
         total_items,
         index_time_ms,
+        history_path,
     );
 
     // Run app
@@ -639,18 +685,66 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
             _ => {}
         },
         InputMode::Filtering => match code {
-            KeyCode::Esc | KeyCode::Enter => {
+            KeyCode::Enter => {
+                if !app.filter_text.trim().is_empty() {
+                    // Add to history if not same as last
+                    if app.filter_history.last() != Some(&app.filter_text) {
+                        app.filter_history.push(app.filter_text.clone());
+                        app.save_history();
+                    }
+                }
+                app.history_index = None;
+                app.input_mode = InputMode::Normal;
+            }
+            KeyCode::Esc => {
+                app.history_index = None;
                 app.input_mode = InputMode::Normal;
             }
 
             KeyCode::Char(c) => {
+                app.history_index = None;
                 apply_filter_edit(app, |app| app.filter_add_char(c));
             }
             KeyCode::Backspace => {
+                app.history_index = None;
                 apply_filter_edit(app, AppState::filter_backspace);
             }
             KeyCode::Delete => {
+                app.history_index = None;
                 apply_filter_edit(app, AppState::filter_delete);
+            }
+
+            KeyCode::Up => {
+                if !app.filter_history.is_empty() {
+                    match app.history_index {
+                        None => {
+                            app.stashed_input = app.filter_text.clone();
+                            app.history_index = Some(app.filter_history.len() - 1);
+                        }
+                        Some(idx) if idx > 0 => {
+                            app.history_index = Some(idx - 1);
+                        }
+                        _ => {}
+                    }
+                    if let Some(idx) = app.history_index {
+                        app.filter_text = app.filter_history[idx].clone();
+                        app.filter_move_to_end();
+                        app.update_filter();
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if let Some(idx) = app.history_index {
+                    if idx < app.filter_history.len() - 1 {
+                        app.history_index = Some(idx + 1);
+                        app.filter_text = app.filter_history[idx + 1].clone();
+                    } else {
+                        app.history_index = None;
+                        app.filter_text = app.stashed_input.clone();
+                    }
+                    app.filter_move_to_end();
+                    app.update_filter();
+                }
             }
 
             KeyCode::Left => {
@@ -1337,6 +1431,7 @@ mod tests {
             "v0.0.0".to_string(),
             2,
             0.0,
+            std::path::PathBuf::from("history.txt"),
         );
 
         // Initial state
@@ -1380,6 +1475,7 @@ mod tests {
             "v0.0.0".to_string(),
             2,
             0.0,
+            std::path::PathBuf::from("history.txt"),
         );
 
         // Switch to the filtering mode
@@ -1424,6 +1520,7 @@ mod tests {
             "v0.0.0".to_string(),
             2,
             0.0,
+            std::path::PathBuf::from("history.txt"),
         );
 
         handle_key_event(&mut app, KeyCode::Char('a'), KeyModifiers::empty());
@@ -1431,5 +1528,68 @@ mod tests {
         assert_eq!(app.filter_text, "a");
         assert_eq!(app.filter_cursor, 1);
         assert_eq!(app.filtered_indices.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_history() {
+        let items = vec![(json!({"id": "apple"}), "apple".to_string(), "t".to_string())];
+        let search_index = search_index::SearchIndex::build(&items);
+        let theme = theme::dracula_theme();
+        let temp_dir = std::env::temp_dir();
+        let history_path = temp_dir.join("cbn_tui_test_history.txt");
+        if history_path.exists() {
+            let _ = std::fs::remove_file(&history_path);
+        }
+
+        let mut app = AppState::new(
+            items,
+            search_index,
+            theme,
+            "test".to_string(),
+            "v0.0.0".to_string(),
+            1,
+            0.0,
+            history_path.clone(),
+        );
+
+        // Enter filter mode and type "apple", then enter
+        handle_key_event(&mut app, KeyCode::Char('/'), KeyModifiers::empty());
+        for c in "apple".chars() {
+            handle_key_event(&mut app, KeyCode::Char(c), KeyModifiers::empty());
+        }
+        handle_key_event(&mut app, KeyCode::Enter, KeyModifiers::empty());
+        assert_eq!(app.filter_history.len(), 1);
+        assert_eq!(app.filter_history[0], "apple");
+
+        // Verify it was saved
+        let saved = std::fs::read_to_string(&history_path).unwrap();
+        assert_eq!(saved.trim(), "apple");
+
+        // Enter filter mode again, type "banana", then enter
+        handle_key_event(&mut app, KeyCode::Char('/'), KeyModifiers::empty());
+        app.clear_filter();
+        for c in "banana".chars() {
+            handle_key_event(&mut app, KeyCode::Char(c), KeyModifiers::empty());
+        }
+        handle_key_event(&mut app, KeyCode::Enter, KeyModifiers::empty());
+        assert_eq!(app.filter_history.len(), 2);
+        assert_eq!(app.filter_history[1], "banana");
+
+        // Test navigation: Up
+        handle_key_event(&mut app, KeyCode::Char('/'), KeyModifiers::empty());
+        app.clear_filter();
+        handle_key_event(&mut app, KeyCode::Up, KeyModifiers::empty());
+        assert_eq!(app.filter_text, "banana");
+        handle_key_event(&mut app, KeyCode::Up, KeyModifiers::empty());
+        assert_eq!(app.filter_text, "apple");
+
+        // Test navigation: Down
+        handle_key_event(&mut app, KeyCode::Down, KeyModifiers::empty());
+        assert_eq!(app.filter_text, "banana");
+        handle_key_event(&mut app, KeyCode::Down, KeyModifiers::empty());
+        assert_eq!(app.filter_text, ""); // Should return to stashed input (empty)
+
+        // Clean up
+        let _ = std::fs::remove_file(&history_path);
     }
 }
