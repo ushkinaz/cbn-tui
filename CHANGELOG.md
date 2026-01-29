@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### New Features
 
 - **Scrollable JSON details**: Added a scrollable details pane with a metadata header for key fields.
+- **Filter history navigation**: Cycle through previous filters without retyping.
 - **Multiple themes**: Choose from Dracula, Solarized, Gruvbox, and Everforest Light.
 - **Status bar and help overlay**: New status bar plus a help overlay with search syntax guidance.
 
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bugfixes
 
+- Fixed missing labels for entries without names.
 - Fixed selection handling when filters return no results.
 - Fixed filter cursor rendering edge cases.
 
