@@ -853,7 +853,7 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
         .border_style(app.theme.border.bg(app.theme.background))
         .style(app.theme.border.bg(app.theme.background))
         .title(" JSON ")
-        .title_alignment(ratatui::layout::Alignment::Left)
+        .title_alignment(Alignment::Left)
         .title_style(app.theme.title)
         .title_bottom(Line::from(" pg-up / pg-down ").right_aligned());
 
@@ -861,76 +861,12 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
     f.render_widget(block, area);
 
     if inner_area.width > 0 && inner_area.height > 0 {
-        // Extract metadata for the header
-        let mut header_rows = Vec::new();
-        if let Some((json, id, type_)) = app.get_selected_item() {
-            let id_val = if !id.is_empty() {
-                id.clone()
-            } else {
-                json.get("abstract")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            };
-            let type_val = if !type_.is_empty() {
-                type_.clone()
-            } else {
-                json.get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            };
-            let name_val = json
-                .get("name")
-                .and_then(|v| name_value(v))
-                .or_else(|| fallback_display_name(json, id, type_))
-                .unwrap_or_default();
-            let cat_val = json
-                .get("category")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-
-            let col1_width = 40;
-
-            // Row 1: id and name
-            if !id_val.is_empty() || !name_val.is_empty() {
-                header_rows.push(Line::from(vec![
-                    Span::styled(
-                        format!("{: <width$}", id_val, width = col1_width),
-                        app.theme.text,
-                    ),
-                    Span::styled(name_val, app.theme.text),
-                ]));
-            }
-
-            // Row 2: type and category
-            if !type_val.is_empty() || !cat_val.is_empty() {
-                header_rows.push(Line::from(vec![
-                    Span::styled(
-                        format!("{: <width$}", type_val, width = col1_width),
-                        app.theme.text,
-                    ),
-                    Span::styled(cat_val, app.theme.text),
-                ]));
-            }
-        }
-
-        let mut content_area = inner_area;
         let horizontal_padding = 1;
+        let mut content_area = inner_area;
 
-        if !header_rows.is_empty() {
-            let header_height = header_rows.len() as u16;
+        let header_height = render_metadata_header(f, app, inner_area);
 
-            // Render header with padding
-            let header_render_area = Rect::new(
-                inner_area.x + horizontal_padding,
-                inner_area.y,
-                inner_area.width.saturating_sub(horizontal_padding * 2),
-                header_height,
-            );
-            f.render_widget(Paragraph::new(header_rows), header_render_area);
-
+        if header_height > 0 {
             // Render horizontal separator line that merges with borders
             let separator_y = inner_area.y + header_height;
             if separator_y < area.y + area.height - 1 {
@@ -992,6 +928,71 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
         }
     }
 }
+
+/// Renders the metadata header (ID, Name, Type, Category) for the selected item.
+/// Uses a two-column layout with 50% width each.
+/// Returns the height occupied by the header (always 2).
+fn render_metadata_header(f: &mut Frame, app: &mut AppState, area: Rect) -> u16 {
+    let Some((json, id, type_)) = app.get_selected_item() else {
+        return 0;
+    };
+
+    let id_val = if !id.is_empty() {
+        id.as_str()
+    } else {
+        json.get("abstract").and_then(|v| v.as_str()).unwrap_or("")
+    };
+    let type_val = if !type_.is_empty() {
+        type_.as_str()
+    } else {
+        json.get("type").and_then(|v| v.as_str()).unwrap_or("")
+    };
+    let name_val = json
+        .get("name")
+        .and_then(name_value)
+        .or_else(|| fallback_display_name(json, id, type_))
+        .unwrap_or_default();
+    let cat_val = json
+        .get("category")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let id_val = if id_val.is_empty() { " " } else { id_val };
+    let name_val = if name_val.is_empty() { " " } else { &name_val };
+    let type_val = if type_val.is_empty() { " " } else { type_val };
+    let cat_val = if cat_val.is_empty() { " " } else { cat_val };
+
+    let horizontal_padding = 1;
+    let header_area = Rect::new(
+        area.x + horizontal_padding,
+        area.y,
+        area.width.saturating_sub(horizontal_padding * 2),
+        2,
+    );
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(header_area);
+
+    for (i, row_area) in rows.iter().enumerate() {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(*row_area);
+
+        if i == 0 {
+            f.render_widget(Paragraph::new(id_val).style(app.theme.text), cols[0]);
+            f.render_widget(Paragraph::new(name_val).style(app.theme.text), cols[1]);
+        } else {
+            f.render_widget(Paragraph::new(type_val).style(app.theme.text), cols[0]);
+            f.render_widget(Paragraph::new(cat_val).style(app.theme.text), cols[1]);
+        }
+    }
+
+    2 // height
+}
+
 
 fn render_filter(f: &mut Frame, app: &mut AppState, area: Rect) {
     let block = Block::default()
@@ -1206,11 +1207,10 @@ fn display_name_for_item(json: &Value, id: &str, type_: &str) -> String {
         return format!("(abs) {}", abstract_);
     }
 
-    if let Some(name) = json.get("name").and_then(name_value) {
-        if !name.is_empty() {
+    if let Some(name) = json.get("name").and_then(name_value)
+        && !name.is_empty() {
             return name;
         }
-    }
 
     if let Some(fallback) = fallback_display_name(json, id, type_) {
         return fallback;
@@ -1238,24 +1238,21 @@ fn fallback_display_name(json: &Value, id: &str, type_: &str) -> Option<String> 
             }
         }
         "uncraft" => {
-            if let Some(result) = json.get("result").and_then(|v| v.as_str()) {
-                if !result.is_empty() {
+            if let Some(result) = json.get("result").and_then(|v| v.as_str())
+                && !result.is_empty() {
                     return Some(format!("result: {}", result));
                 }
-            }
             None
         }
         "profession_item_substitutions" => {
-            if let Some(trait_) = json.get("trait").and_then(|v| v.as_str()) {
-                if !trait_.is_empty() {
+            if let Some(trait_) = json.get("trait").and_then(|v| v.as_str())
+                && !trait_.is_empty() {
                     return Some(format!("trait: {}", trait_));
                 }
-            }
-            if let Some(item) = json.get("item").and_then(|v| v.as_str()) {
-                if !item.is_empty() {
+            if let Some(item) = json.get("item").and_then(|v| v.as_str())
+                && !item.is_empty() {
                     return Some(format!("item: {}", item));
                 }
-            }
             None
         }
         _ => None,
@@ -1411,6 +1408,7 @@ fn filter_cursor_offset(text: &str, cursor: usize) -> u16 {
 }
 
 #[cfg(test)]
+//noinspection DuplicatedCode
 mod tests {
     use super::*;
     use ratatui::style::Color;
@@ -1618,7 +1616,7 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let history_path = temp_dir.join("cbn_tui_test_history.txt");
         if history_path.exists() {
-            let _ = std::fs::remove_file(&history_path);
+            let _ = fs::remove_file(&history_path);
         }
 
         let mut app = AppState::new(
@@ -1642,7 +1640,7 @@ mod tests {
         assert_eq!(app.filter_history[0], "apple");
 
         // Verify it was saved
-        let saved = std::fs::read_to_string(&history_path).unwrap();
+        let saved = fs::read_to_string(&history_path).unwrap();
         assert_eq!(saved.trim(), "apple");
 
         // Enter filter mode again, type "banana", then enter
@@ -1670,6 +1668,6 @@ mod tests {
         assert_eq!(app.filter_text, ""); // Should return to stashed input (empty)
 
         // Clean up
-        let _ = std::fs::remove_file(&history_path);
+        let _ = fs::remove_file(&history_path);
     }
 }
