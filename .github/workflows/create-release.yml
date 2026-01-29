@@ -61,12 +61,32 @@ jobs:
           # Verify the change
           grep '^version = ' Cargo.toml
 
+      - name: Update CHANGELOG.md
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          NEW_VERSION=${{ steps.versioning.outputs.new_version }}
+          PREV_VERSION=$(grep '^## \[' CHANGELOG.md | grep -v 'Unreleased' | head -n 1 | sed -n 's/## \[\(.*\)\] - .*/\1/p')
+
+          # Update the [Unreleased] header to the new version
+          sed -i "s/## \[Unreleased\]/## [$NEW_VERSION] - $DATE/" CHANGELOG.md
+
+          # Re-insert the [Unreleased] header at the top
+          sed -i '/## \['"$NEW_VERSION"'\]/i ## [Unreleased]\n' CHANGELOG.md
+
+          # Update comparison links at the bottom
+          # 1. Update [Unreleased] link to point from new tag to HEAD
+          sed -i "s|^\[Unreleased\]:.*|\[Unreleased\]: https://github.com/ushkinaz/cbn-tui/compare/v$NEW_VERSION...HEAD|" CHANGELOG.md
+          
+          # 2. Add the new version link pointing from previous tag to new tag
+          # Find the line after [Unreleased] and insert the new version link
+          sed -i "/^\[Unreleased\]:/a \[$NEW_VERSION\]: https://github.com/ushkinaz/cbn-tui/compare/v$PREV_VERSION...v$NEW_VERSION" CHANGELOG.md
+
       - name: Commit and Push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add Cargo.toml
+          git add Cargo.toml CHANGELOG.md
           git commit -m "chore: release ${{ steps.versioning.outputs.tag }}"
           git tag ${{ steps.versioning.outputs.tag }}
 

@@ -56,10 +56,28 @@ jobs:
             cp target/${{ matrix.target }}/release/cbn-tui ${{ matrix.asset_name }}
           fi
 
+      - name: Extract Release Notes
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag_name || github.ref_name }}"
+          # Extract version from tag (v0.3.1 -> 0.3.1)
+          VERSION=${TAG#v}
+          
+          # Extract the section for the version
+          # It starts at '## [VERSION]' and ends at the next '## [' or end of file
+          awk "/## \[$VERSION\]/{p=1; next} /## \[/{if(p) exit} p" CHANGELOG.md > release_notes.md
+          
+          # Verify content
+          if [ ! -s release_notes.md ]; then
+            echo "Warning: Release notes are empty!"
+            echo "No changes" > release_notes.md
+          fi
+
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag_name || github.ref_name }}
           files: ${{ matrix.asset_name }}
-          generate_release_notes: true
+          body_path: release_notes.md
+          generate_release_notes: false
           # Note: softprops/action-gh-release handles parallel uploads to the same release
