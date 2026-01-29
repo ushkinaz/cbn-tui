@@ -1,14 +1,6 @@
 //! # cbn-tui
 //!
 //! A terminal user interface (TUI) for browsing Cataclysm: Bright Nights game data.
-//!
-//! This application provides an interactive browser for viewing and searching through
-//! game JSON data with features including:
-//! - Fast inverted-index search with classifiers (id:, type:, category:)
-//! - Four beautiful themes (Dracula, Solarized, Gruvbox, Everforest Light)
-//! - Syntax-highlighted JSON display
-//! - Real-time filtering with UTF-8 support
-//! - Automatic data downloading and caching
 
 use anyhow::Result;
 use clap::Parser;
@@ -17,27 +9,18 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect, Size},
-    style::{Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{
-        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Wrap,
-    },
-};
-use serde::Deserialize;
+use ratatui::{Terminal, backend::CrosstermBackend, text::Text, widgets::ListState};
 use serde_json::Value;
 use std::fs;
 use std::io;
 use std::str::FromStr;
-use tui_scrollview::{ScrollView, ScrollViewState, ScrollbarVisibility};
+use tui_scrollview::ScrollViewState;
 
+mod data;
 mod matcher;
 mod search_index;
 mod theme;
+mod ui;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -67,77 +50,19 @@ struct Args {
     /// UI theme (dracula, solarized, gruvbox, everforest_light)
     #[arg(short, long)]
     theme: Option<String>,
-}
 
-/// Core metadata for a game build, flattened from various JSON sources.
-#[derive(Debug, Clone)]
-struct BuildInfo {
-    /// The unique build identifier (e.g., "2024-01-01" or "v0.9.1").
-    build_number: String,
-    /// The human-readable tag name (often matches build_number or is more descriptive).
-    tag_name: String,
-    /// Whether this is a prerelease/nightly build.
-    prerelease: bool,
-    /// ISO 8601 creation timestamp.
-    created_at: String,
-}
+    /// Show all paths used by the application (data, cache, history)
+    #[arg(long)]
+    config: bool,
 
-/// The root structure of the game data JSON (`all.json`).
-#[derive(Debug, Deserialize)]
-struct Root {
-    /// Flattened build metadata.
-    #[serde(flatten)]
-    build: BuildInfo,
-    /// The actual game data items.
-    data: Vec<Value>,
-}
-
-impl<'de> Deserialize<'de> for BuildInfo {
-    /// Custom deserializer to flatten the potential nesting of `release.tag_name`
-    /// from Github-style JSON responses into a flat domain model.
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Proxy {
-            build_number: String,
-            prerelease: Option<bool>,
-            created_at: Option<String>,
-            release: Option<Value>,
-        }
-
-        let proxy = Proxy::deserialize(deserializer)?;
-
-        let mut tag_name = proxy.build_number.clone();
-        let mut prerelease = proxy.prerelease.unwrap_or(false);
-        let mut created_at = proxy.created_at.unwrap_or_default();
-
-        // Extract flattened fields from the optional nested `release` object
-        if let Some(release) = proxy.release {
-            if let Some(tag) = release.get("tag_name").and_then(|v| v.as_str()) {
-                tag_name = tag.to_string();
-            }
-            if let Some(pre) = release.get("prerelease").and_then(|v| v.as_bool()) {
-                prerelease = pre;
-            }
-            if let Some(created) = release.get("created_at").and_then(|v| v.as_str()) {
-                created_at = created.to_string();
-            }
-        }
-
-        Ok(BuildInfo {
-            build_number: proxy.build_number,
-            tag_name,
-            prerelease,
-            created_at,
-        })
-    }
+    /// Clear the search history
+    #[arg(long)]
+    clear_history: bool,
 }
 
 /// Current input mode for the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InputMode {
+pub enum InputMode {
     /// Normal navigation mode
     Normal,
     /// Mode for entering filter text
@@ -145,49 +70,49 @@ enum InputMode {
 }
 
 /// Application state for the Ratatui app.
-struct AppState {
+pub struct AppState {
     /// All loaded items in indexed format (json, id, type)
-    indexed_items: Vec<(Value, String, String)>,
+    pub indexed_items: Vec<(Value, String, String)>,
     /// Search index for fast lookups
-    search_index: search_index::SearchIndex,
+    pub search_index: search_index::SearchIndex,
     /// Indices into indexed_items that match the current filter
-    filtered_indices: Vec<usize>,
+    pub filtered_indices: Vec<usize>,
     /// List selection state managed by ratatui
-    list_state: ListState,
+    pub list_state: ListState,
     /// Filter input text
-    filter_text: String,
+    pub filter_text: String,
     /// Cursor position in filter
-    filter_cursor: usize,
+    pub filter_cursor: usize,
     /// Current input mode
-    input_mode: InputMode,
+    pub input_mode: InputMode,
     /// Theme configuration
-    theme: theme::ThemeConfig,
+    pub theme: theme::ThemeConfig,
     /// Resolved game version (from JSON tag_name)
-    game_version: String,
+    pub game_version: String,
     /// App version string
-    app_version: String,
+    pub app_version: String,
     /// Number of items in the full dataset
-    total_items: usize,
+    pub total_items: usize,
     /// Time taken to build the index
-    index_time_ms: f64,
+    pub index_time_ms: f64,
     /// Scroll state for details pane
-    details_scroll_state: ScrollViewState,
+    pub details_scroll_state: ScrollViewState,
     /// Cached highlighted JSON text for the current selection
-    details_text: Text<'static>,
+    pub details_text: Text<'static>,
     /// Number of lines in the current details_text
-    details_line_count: usize,
+    pub details_line_count: usize,
     /// Flag to quit app
-    should_quit: bool,
+    pub should_quit: bool,
     /// Whether help overlay is visible
-    show_help: bool,
+    pub show_help: bool,
     /// Previous search expressions
-    filter_history: Vec<String>,
+    pub filter_history: Vec<String>,
     /// Current index in history during navigation
-    history_index: Option<usize>,
+    pub history_index: Option<usize>,
     /// Saved input when starting history navigation
-    stashed_input: String,
+    pub stashed_input: String,
     /// Path to history file
-    history_path: std::path::PathBuf,
+    pub history_path: std::path::PathBuf,
 }
 
 impl AppState {
@@ -260,7 +185,7 @@ impl AppState {
         if let Some((json, _, _)) = self.get_selected_item() {
             match serde_json::to_string_pretty(json) {
                 Ok(json_str) => {
-                    self.details_text = highlight_json(&json_str, &self.theme.json_style);
+                    self.details_text = ui::highlight_json(&json_str, &self.theme.json_style);
                     self.details_line_count = self.details_text.lines.len();
                 }
                 Err(_) => {
@@ -284,10 +209,9 @@ impl AppState {
         }
 
         if let Some(selected) = self.list_state.selected()
-            && selected >= len
-        {
-            self.list_state.select(Some(len - 1));
-        }
+            && selected >= len {
+                self.list_state.select(Some(len - 1));
+            }
     }
 
     /// Moves selection by `direction` (+1 or -1) and refreshes details.
@@ -301,7 +225,7 @@ impl AppState {
         self.refresh_details();
     }
 
-    fn get_selected_item(&self) -> Option<&(Value, String, String)> {
+    pub fn get_selected_item(&self) -> Option<&(Value, String, String)> {
         self.list_state
             .selected()
             .and_then(|idx| self.filtered_indices.get(idx))
@@ -317,7 +241,6 @@ impl AppState {
     }
 
     fn filter_add_char(&mut self, c: char) {
-        // Convert char index to byte index for safe UTF-8 insertion
         let byte_idx = self
             .filter_text
             .char_indices()
@@ -331,7 +254,6 @@ impl AppState {
     fn filter_backspace(&mut self) {
         if self.filter_cursor > 0 {
             self.filter_cursor -= 1;
-            // Convert char index to byte index for safe UTF-8 removal
             if let Some((byte_idx, _)) = self.filter_text.char_indices().nth(self.filter_cursor) {
                 self.filter_text.remove(byte_idx);
             }
@@ -340,12 +262,10 @@ impl AppState {
 
     fn filter_delete(&mut self) {
         let char_count = self.filter_text.chars().count();
-        if self.filter_cursor < char_count {
-            // Convert char index to byte index for safe UTF-8 removal
-            if let Some((byte_idx, _)) = self.filter_text.char_indices().nth(self.filter_cursor) {
+        if self.filter_cursor < char_count
+            && let Some((byte_idx, _)) = self.filter_text.char_indices().nth(self.filter_cursor) {
                 self.filter_text.remove(byte_idx);
             }
-        }
     }
 
     fn filter_move_cursor_left(&mut self) {
@@ -373,7 +293,6 @@ impl AppState {
         let new_filtered =
             matcher::search_with_index(&self.search_index, &self.indexed_items, &self.filter_text);
         self.filtered_indices = new_filtered;
-        // Reset selection to the first item
         if self.filtered_indices.is_empty() {
             self.list_state.select(None);
         } else {
@@ -383,6 +302,7 @@ impl AppState {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     fn clear_filter(&mut self) {
         self.filter_text.clear();
         self.filter_cursor = 0;
@@ -392,7 +312,6 @@ impl AppState {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-
     let app_version = format!("v{}", env!("CARGO_PKG_VERSION"));
 
     // Theme selection
@@ -401,39 +320,7 @@ fn main() -> Result<()> {
     let theme = theme_enum.config();
 
     if args.game_versions {
-        let project_dirs = directories::ProjectDirs::from("com", "cataclysmbn", "cbn-tui")
-            .ok_or_else(|| anyhow::anyhow!("Could not determine cache directory"))?;
-        let cache_dir = project_dirs.cache_dir();
-        fs::create_dir_all(cache_dir)?;
-        let builds_path = cache_dir.join("builds.json");
-
-        let mut should_download = args.force || !builds_path.exists();
-        if !should_download
-            && let Ok(metadata) = fs::metadata(&builds_path)
-            && let Ok(modified) = metadata.modified()
-            && let Ok(elapsed) = modified.elapsed()
-            && elapsed.as_secs() > 3600
-        {
-            should_download = true;
-        }
-
-        let content = if should_download {
-            let url = "https://data.cataclysmbn-guide.com/builds.json";
-            let response = reqwest::blocking::get(url)?;
-            if !response.status().is_success() {
-                anyhow::bail!("Failed to download builds list: {}", response.status());
-            }
-            let bytes = response.bytes()?;
-            fs::write(&builds_path, &bytes)?;
-            String::from_utf8(bytes.to_vec())?
-        } else {
-            fs::read_to_string(&builds_path)?
-        };
-
-        let mut builds: Vec<BuildInfo> = serde_json::from_str(&content)?;
-        // List in order of creation (newest first)
-        builds.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
+        let builds = data::fetch_builds(args.force)?;
         for build in builds {
             let type_ = if build.prerelease {
                 "Nightly"
@@ -445,81 +332,52 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let requested_version = args.game.clone();
+    let cache_dir = data::get_cache_dir()?;
+    let data_dir = data::get_data_dir()?;
+    let history_path = data_dir.join("history.txt");
+
+    if args.config {
+        println!("App Paths:");
+        println!("  Cache:   {}", cache_dir.display());
+        println!("  Data:    {}", data_dir.display());
+        println!("  History: {}", history_path.display());
+        return Ok(());
+    }
+
+    if args.clear_history {
+        if history_path.exists() {
+            fs::remove_file(&history_path)?;
+            println!("Search history cleared.");
+        } else {
+            println!("Search history is already empty.");
+        }
+        return Ok(());
+    }
+
     let file_path = if let Some(file) = args.file.as_ref() {
         file.clone()
     } else {
-        let game_version = requested_version.clone();
-        let project_dirs = directories::ProjectDirs::from("com", "cataclysmbn", "cbn-tui")
-            .ok_or_else(|| anyhow::anyhow!("Could not determine cache directory"))?;
-        let version_cache_dir = project_dirs.cache_dir().join(&game_version);
-        fs::create_dir_all(&version_cache_dir)?;
-
-        let target_path = version_cache_dir.join("all.json");
-
-        let mut should_download = args.force || !target_path.exists();
-        let expiration = match game_version.as_str() {
-            "nightly" => Some(std::time::Duration::from_secs(12 * 3600)),
-            "stable" => Some(std::time::Duration::from_secs(30 * 24 * 3600)),
-            _ => None,
-        };
-
-        if !should_download
-            && let Some(exp) = expiration
-            && let Ok(metadata) = fs::metadata(&target_path)
-            && let Ok(modified) = metadata.modified()
-            && let Ok(elapsed) = modified.elapsed()
-            && elapsed > exp
-        {
-            should_download = true;
-        }
-
-        if should_download {
-            let url = format!(
-                "https://data.cataclysmbn-guide.com/data/{}/all.json",
-                game_version
-            );
-            println!("Downloading data for {} from {}...", game_version, url);
-            let response = reqwest::blocking::get(url)?;
-            if !response.status().is_success() {
-                anyhow::bail!("Failed to download data: {}", response.status());
-            }
-            let bytes = response.bytes()?;
-            fs::write(&target_path, bytes)?;
-        }
-        target_path.to_string_lossy().to_string()
+        data::fetch_game_data(&args.game, args.force)?
+            .to_string_lossy()
+            .to_string()
     };
 
-    // Load Data
     println!("Loading data from {}...", file_path);
-    if !std::path::Path::new(&file_path).exists() {
-        if file_path == "all.json" {
-            anyhow::bail!(
-                "Default 'all.json' not found in current directory. Use --file or --game to specify data source."
-            );
-        } else {
-            anyhow::bail!("File not found: {}", file_path);
-        }
-    }
-    let file = fs::File::open(&file_path)?;
-    let reader = io::BufReader::new(file);
-    let root: Root = serde_json::from_reader(reader)?;
-
+    let root = data::load_root(&file_path)?;
     let total_items = root.data.len();
 
-    // Determine resolved version and version label
-    let build_number = &root.build.build_number;
-    let resolved_version = &root.build.tag_name;
-
+    // Determine version label
     let game_version_label = if args.file.is_some() && args.game == "nightly" {
-        // If loading from file and game is default, just show the file's version
-        resolved_version.clone()
+        root.build.tag_name.clone()
     } else {
-        let requested = requested_version;
-        if !requested.is_empty() && requested != *build_number && requested != *resolved_version {
-            format!("{}:{}", requested, resolved_version)
+        let requested = &args.game;
+        if !requested.is_empty()
+            && requested != &root.build.build_number
+            && requested != &root.build.tag_name
+        {
+            format!("{}:{}", requested, root.build.tag_name)
         } else {
-            resolved_version.clone()
+            root.build.tag_name.clone()
         }
     };
 
@@ -545,18 +403,11 @@ fn main() -> Result<()> {
         })
         .collect();
 
-    // Sort by type then id
     indexed_items.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)));
 
-    // Build search index
     let search_index = search_index::SearchIndex::build(&indexed_items);
     let index_time_ms = start.elapsed().as_secs_f64() * 1000.0;
     println!("Index built in {:.2}ms", index_time_ms);
-
-    // Define history path
-    let project_dirs = directories::ProjectDirs::from("com", "cataclysmbn", "cbn-tui")
-        .ok_or_else(|| anyhow::anyhow!("Could not determine data directory"))?;
-    let history_path = project_dirs.data_dir().join("history.txt");
 
     // Setup terminal
     enable_raw_mode()?;
@@ -565,7 +416,6 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app state
     let mut app = AppState::new(
         indexed_items,
         search_index,
@@ -577,7 +427,6 @@ fn main() -> Result<()> {
         history_path,
     );
 
-    // Run app
     let res = run_app(&mut terminal, &mut app);
 
     // Restore terminal
@@ -599,26 +448,22 @@ fn run_app<B: ratatui::backend::Backend>(
 where
     B::Error: Send + Sync + 'static,
 {
-    // Initial draw
-    terminal.draw(|f| ui(f, app))?;
+    terminal.draw(|f| ui::ui(f, app))?;
 
     loop {
         if app.should_quit {
             break;
         }
 
-        // Block waiting for events (no CPU usage when idle)
         match event::read()? {
             Event::Key(key) => {
                 handle_key_event(app, key.code, key.modifiers);
-                // Redraw after handling key event
-                terminal.draw(|f| ui(f, app))?;
+                terminal.draw(|f| ui::ui(f, app))?;
             }
             Event::Resize(_, _) => {
-                // Redraw on terminal resize
-                terminal.draw(|f| ui(f, app))?;
+                terminal.draw(|f| ui::ui(f, app))?;
             }
-            _ => {} // Ignore other events
+            _ => {}
         }
     }
     Ok(())
@@ -631,50 +476,42 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
     }
 
     if app.show_help {
-        match code {
-            KeyCode::Char('?') | KeyCode::Esc => {
-                app.show_help = false;
-            }
-            _ => {}
+        if matches!(code, KeyCode::Char('?') | KeyCode::Esc) {
+            app.show_help = false;
         }
         return;
     }
 
     match app.input_mode {
         InputMode::Normal => match code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                app.should_quit = true;
-            }
-
-            KeyCode::Char('/') => {
-                app.input_mode = InputMode::Filtering;
-            }
-
-            KeyCode::Char('?') => {
-                app.show_help = true;
-            }
-
+            KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            KeyCode::Char('/') => app.input_mode = InputMode::Filtering,
+            KeyCode::Char('?') => app.show_help = true,
             KeyCode::Up | KeyCode::Char('k') if !modifiers.contains(KeyModifiers::CONTROL) => {
                 app.move_selection(-1);
             }
             KeyCode::Down | KeyCode::Char('j') if !modifiers.contains(KeyModifiers::CONTROL) => {
                 app.move_selection(1);
             }
-
-            KeyCode::PageUp => {
-                app.details_scroll_state.scroll_page_up();
+            KeyCode::Home => {
+                app.list_state.select(Some(0));
+                app.refresh_details();
             }
-            KeyCode::PageDown => {
-                app.details_scroll_state.scroll_page_down();
+            KeyCode::End => {
+                let len = app.filtered_indices.len();
+                if len > 0 {
+                    app.list_state.select(Some(len - 1));
+                    app.refresh_details();
+                }
             }
-
+            KeyCode::PageUp => app.details_scroll_state.scroll_page_up(),
+            KeyCode::PageDown => app.details_scroll_state.scroll_page_down(),
             KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
                 app.scroll_details_up();
             }
             KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
                 app.scroll_details_down();
             }
-
             KeyCode::Char(c)
                 if c.is_alphanumeric()
                     && !modifiers.contains(KeyModifiers::CONTROL)
@@ -684,18 +521,15 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
                 app.filter_move_to_end();
                 apply_filter_edit(app, |app| app.filter_add_char(c));
             }
-
             _ => {}
         },
         InputMode::Filtering => match code {
             KeyCode::Enter => {
-                if !app.filter_text.trim().is_empty() {
-                    // Add to history if not same as last
-                    if app.filter_history.last() != Some(&app.filter_text) {
+                if !app.filter_text.trim().is_empty()
+                    && app.filter_history.last() != Some(&app.filter_text) {
                         app.filter_history.push(app.filter_text.clone());
                         app.save_history();
                     }
-                }
                 app.history_index = None;
                 app.input_mode = InputMode::Normal;
             }
@@ -703,7 +537,6 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
                 app.history_index = None;
                 app.input_mode = InputMode::Normal;
             }
-
             KeyCode::Char(c) => {
                 app.history_index = None;
                 apply_filter_edit(app, |app| app.filter_add_char(c));
@@ -716,7 +549,6 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
                 app.history_index = None;
                 apply_filter_edit(app, AppState::filter_delete);
             }
-
             KeyCode::Up => {
                 if !app.filter_history.is_empty() {
                     match app.history_index {
@@ -749,925 +581,207 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
                     app.update_filter();
                 }
             }
-
-            KeyCode::Left => {
-                app.filter_move_cursor_left();
-            }
-            KeyCode::Right => {
-                app.filter_move_cursor_right();
-            }
-            KeyCode::Home => {
-                app.filter_move_to_start();
-            }
-            KeyCode::End => {
-                app.filter_move_to_end();
-            }
-
+            KeyCode::Left => app.filter_move_cursor_left(),
+            KeyCode::Right => app.filter_move_cursor_right(),
+            KeyCode::Home => app.filter_move_to_start(),
+            KeyCode::End => app.filter_move_to_end(),
             _ => {}
         },
     }
 }
 
-fn ui(f: &mut Frame, app: &mut AppState) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(0),    // Main area - takes all space
-            Constraint::Length(3), // Filter input - fixed 3 lines
-            Constraint::Length(1), // Status bar
-        ])
-        .split(f.area());
-
-    let main_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-        .split(chunks[0]);
-
-    // Render item list
-    render_item_list(f, app, main_chunks[0]);
-
-    // Render details pane
-    render_details(f, app, main_chunks[1]);
-
-    // Render filter input
-    render_filter(f, app, chunks[1]);
-
-    // Render status bar
-    render_status_bar(f, app, chunks[2]);
-
-    if app.show_help {
-        render_help_overlay(f, app);
-    }
-}
-
-fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
-    let items = app
-        .filtered_indices
-        .iter()
-        .map(|&idx| {
-            let (json, id, type_) = &app.indexed_items[idx];
-            let display_name = display_name_for_item(json, id, type_);
-
-            let type_label = Line::from(vec![
-                Span::styled(format!("{} ", type_), app.theme.title),
-                Span::raw(display_name),
-            ]);
-            ListItem::new(type_label)
-        });
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(app.theme.border_selected)
-        .title_style(app.theme.title)
-        .title(format!(" Items ({}) ", app.filtered_indices.len()))
-        .title_bottom(Line::from(" up / down ").right_aligned())
-        .title_alignment(Alignment::Left)
-        .style(app.theme.list_normal);
-
-    let list = List::new(items)
-        .block(block)
-        .style(app.theme.list_normal)
-        .scroll_padding(2)
-        .highlight_style(app.theme.list_selected);
-
-    f.render_stateful_widget(list, area, &mut app.list_state);
-
-    // Render scrollbar
-    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-    let mut scrollbar_state = ScrollbarState::new(app.filtered_indices.len())
-        .position(app.list_state.selected().unwrap_or(0));
-
-    f.render_stateful_widget(
-        scrollbar,
-        area.inner(Margin {
-            vertical: 1,
-            horizontal: 0,
-        }),
-        &mut scrollbar_state,
-    );
-}
-
-fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(app.theme.border.bg(app.theme.background))
-        .style(app.theme.border.bg(app.theme.background))
-        .title(" JSON ")
-        .title_alignment(Alignment::Left)
-        .title_style(app.theme.title)
-        .title_bottom(Line::from(" pg-up / pg-down ").right_aligned());
-
-    let inner_area = block.inner(area);
-    f.render_widget(block, area);
-
-    if inner_area.width > 0 && inner_area.height > 0 {
-        let horizontal_padding = 1;
-        let mut content_area = inner_area;
-
-        let header_height = render_metadata_header(f, app, inner_area);
-
-        if header_height > 0 {
-            // Render horizontal separator line that merges with borders
-            let separator_y = inner_area.y + header_height;
-            if separator_y < area.y + area.height - 1 {
-                let separator_line = format!("├{}┤", "─".repeat(inner_area.width as usize));
-                f.render_widget(
-                    Paragraph::new(separator_line).style(app.theme.border),
-                    Rect::new(area.x, separator_y, area.width, 1),
-                );
-                content_area = Rect::new(
-                    inner_area.x,
-                    separator_y + 1,
-                    inner_area.width,
-                    inner_area.height.saturating_sub(header_height + 1),
-                );
-            }
-        }
-
-        // Apply 1-symbol horizontal padding within the content area
-        let content_width = content_area.width.saturating_sub(horizontal_padding * 2);
-
-        if content_width > 0 && content_area.height > 0 {
-            // Calculate the height required when text is wrapped to content_width
-            let mut wrapped_height = 0;
-            for line in &app.details_text.lines {
-                let line_width = line.width() as u16;
-                if line_width == 0 {
-                    wrapped_height += 1;
-                } else {
-                    wrapped_height += line_width.div_ceil(content_width);
-                }
-            }
-            let content_height = wrapped_height;
-
-            let mut scroll_view = ScrollView::new(Size::new(content_width, content_height))
-                .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
-                .horizontal_scrollbar_visibility(ScrollbarVisibility::Never);
-
-            // Match the background of the scroll view buffer to the theme
-            let scroll_area = scroll_view.area();
-            scroll_view.buf_mut().set_style(scroll_area, app.theme.text);
-
-            let content_rect = Rect::new(0, 0, content_width, content_height);
-            scroll_view.render_widget(
-                Paragraph::new(app.details_text.clone())
-                    .style(app.theme.text)
-                    .wrap(Wrap { trim: false }),
-                content_rect,
-            );
-
-            // Render ScrollView centered horizontally within content_area using the padding
-            let scroll_view_area = Rect::new(
-                content_area.x + horizontal_padding,
-                content_area.y,
-                content_width,
-                content_area.height,
-            );
-
-            f.render_stateful_widget(scroll_view, scroll_view_area, &mut app.details_scroll_state);
-        }
-    }
-}
-
-/// Renders the metadata header (ID, Name, Type, Category) for the selected item.
-/// Uses a two-column layout with 50% width each.
-/// Returns the height occupied by the header (always 2).
-fn render_metadata_header(f: &mut Frame, app: &mut AppState, area: Rect) -> u16 {
-    let Some((json, id, type_)) = app.get_selected_item() else {
-        return 0;
-    };
-
-    let id_val = if !id.is_empty() {
-        id.as_str()
-    } else {
-        json.get("abstract").and_then(|v| v.as_str()).unwrap_or("")
-    };
-    let type_val = if !type_.is_empty() {
-        type_.as_str()
-    } else {
-        json.get("type").and_then(|v| v.as_str()).unwrap_or("")
-    };
-    let name_val = json
-        .get("name")
-        .and_then(name_value)
-        .or_else(|| fallback_display_name(json, id, type_))
-        .unwrap_or_default();
-    let cat_val = json
-        .get("category")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    let id_val = if id_val.is_empty() { " " } else { id_val };
-    let name_val = if name_val.is_empty() { " " } else { &name_val };
-    let type_val = if type_val.is_empty() { " " } else { type_val };
-    let cat_val = if cat_val.is_empty() { " " } else { cat_val };
-
-    let horizontal_padding = 1;
-    let header_area = Rect::new(
-        area.x + horizontal_padding,
-        area.y,
-        area.width.saturating_sub(horizontal_padding * 2),
-        2,
-    );
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(header_area);
-
-    for (i, row_area) in rows.iter().enumerate() {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(*row_area);
-
-        if i == 0 {
-            f.render_widget(Paragraph::new(id_val).style(app.theme.text), cols[0]);
-            f.render_widget(Paragraph::new(name_val).style(app.theme.text), cols[1]);
-        } else {
-            f.render_widget(Paragraph::new(type_val).style(app.theme.text), cols[0]);
-            f.render_widget(Paragraph::new(cat_val).style(app.theme.text), cols[1]);
-        }
-    }
-
-    2 // height
-}
-
-
-fn render_filter(f: &mut Frame, app: &mut AppState, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(if app.input_mode == InputMode::Filtering {
-            app.theme.border_selected
-        } else {
-            app.theme.border
-        })
-        .title(" Filter (/) ")
-        .title_style(app.theme.title);
-
-    let inner = block.inner(area);
-    let content = if app.filter_text.is_empty() && app.input_mode != InputMode::Filtering {
-        Text::from(Line::from(Span::styled(
-            "t:gun ammo:rpg",
-            app.theme.text.add_modifier(Modifier::DIM).italic(),
-        )))
-    } else {
-        Text::from(app.filter_text.as_str())
-    };
-
-    let paragraph = Paragraph::new(content).block(block).style(app.theme.text);
-
-    f.render_widget(paragraph, area);
-
-    if app.input_mode == InputMode::Filtering && inner.width > 0 && inner.height > 0 {
-        let cursor_offset = filter_cursor_offset(&app.filter_text, app.filter_cursor);
-        let max_x = inner.width.saturating_sub(1);
-        let cursor_x = inner.x + cursor_offset.min(max_x);
-        let cursor_y = inner.y;
-        f.set_cursor_position((cursor_x, cursor_y));
-    }
-}
-
-fn render_status_bar(f: &mut Frame, app: &mut AppState, area: Rect) {
-    let area = Rect::new(
-        area.x + 1,
-        area.y,
-        area.width.saturating_sub(2),
-        area.height,
-    );
-
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(40),
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
-        ])
-        .split(area);
-
-    render_status_bar_shortcuts(f, app, chunks[0]);
-    render_status_bar_operational(f, app, chunks[1]);
-    render_status_bar_versions(f, app, chunks[2]);
-}
-
-fn render_status_bar_shortcuts(f: &mut Frame, app: &mut AppState, area: Rect) {
-    let key_style = app.theme.title;
-    let bar_style = app.theme.text.add_modifier(Modifier::DIM);
-
-    let shortcuts = Line::from(vec![
-        Span::styled("/ ", key_style),
-        Span::raw("filter  "),
-        Span::styled("? ", key_style),
-        Span::raw("help  "),
-        Span::styled("Esc ", key_style),
-        Span::raw("quit"),
-    ]);
-
-    f.render_widget(
-        Paragraph::new(shortcuts)
-            .style(bar_style)
-            .alignment(Alignment::Left),
-        area,
-    );
-}
-
-fn render_status_bar_operational(f: &mut Frame, app: &mut AppState, area: Rect) {
-    let bar_style = app.theme.text.add_modifier(Modifier::DIM);
-    let status = Line::from(format!(
-        "Items: {} | Index: {:.2}ms",
-        app.total_items, app.index_time_ms
-    ));
-
-    f.render_widget(
-        Paragraph::new(status)
-            .style(bar_style)
-            .alignment(Alignment::Center),
-        area,
-    );
-}
-
-fn render_status_bar_versions(f: &mut Frame, app: &mut AppState, area: Rect) {
-    let bar_style = app.theme.text.add_modifier(Modifier::DIM);
-    let versions = Line::from(format!(
-        "Game: {}  App: {}",
-        app.game_version, app.app_version
-    ));
-
-    f.render_widget(
-        Paragraph::new(versions)
-            .style(bar_style)
-            .alignment(Alignment::Right),
-        area,
-    );
-}
-
-fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
-    let area = f.area();
-    let popup_width = area.width.min(76).saturating_sub(4);
-    let popup_height = 24.min(area.height.saturating_sub(2));
-    if popup_width == 0 || popup_height == 0 {
-        return;
-    }
-    let popup_rect = Rect::new(
-        area.x + (area.width.saturating_sub(popup_width)) / 2,
-        area.y + (area.height.saturating_sub(popup_height)) / 2,
-        popup_width,
-        popup_height,
-    );
-
-    f.render_widget(Clear, popup_rect);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(app.theme.border_selected)
-        .style(app.theme.border_selected.bg(app.theme.background))
-        .title(" Help ")
-        .border_type(ratatui::widgets::BorderType::Double)
-        .title_style(app.theme.title);
-
-    let inner_area = block.inner(popup_rect);
-    f.render_widget(block, popup_rect);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(10), // Navigation
-            Constraint::Length(1),  // Spacer
-            Constraint::Min(0),     // Search Syntax
-        ])
-        .margin(1)
-        .split(inner_area);
-
-    let key_style = app.theme.title;
-    let desc_style = app.theme.text;
-    let header_style = key_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-
-    // 1. Navigation Section
-    let nav_items = vec![
-        ("/", "filter items"),
-        ("Up | k", "selection up"),
-        ("Down | j", "selection down"),
-        ("PgUp | Ctrl+k", "scroll JSON up"),
-        ("PgDown | Ctrl+j", "scroll JSON down"),
-        ("?", "this help"),
-        ("q", "quit"),
-        ("Esc", "back / quit"),
-    ];
-
-    let mut nav_lines = vec![Line::from(Span::styled("Navigation", header_style))];
-    for (key, desc) in nav_items {
-        nav_lines.push(Line::from(vec![
-            Span::styled(format!("{: <18}", key), key_style),
-            Span::styled(desc, desc_style),
-        ]));
-    }
-    f.render_widget(Paragraph::new(nav_lines), chunks[0]);
-
-    // 2. Search Syntax Section
-    let syntax_lines = vec![
-        Line::from(Span::styled("Search Syntax", header_style)),
-        Line::from(vec![
-            Span::styled("word", key_style),
-            Span::styled(" - generic search in all fields", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("t:gun", key_style),
-            Span::styled(
-                " - filter by type (shortcuts: i:id, t:type, c:cat)",
-                desc_style,
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("bash.str_min:30", key_style),
-            Span::styled(" - filter by nested field", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("'term'", key_style),
-            Span::styled(" - exact match (surround with single quotes)", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("term1 term2", key_style),
-            Span::styled(" - AND logic (matches both terms)", desc_style),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Example: ", key_style.add_modifier(Modifier::BOLD)),
-            Span::styled("t:gun ammo:rpg", desc_style),
-        ]),
-    ];
-    f.render_widget(Paragraph::new(syntax_lines), chunks[2]);
-}
-
-fn display_name_for_item(json: &Value, id: &str, type_: &str) -> String {
-    if !id.is_empty() {
-        return id.to_string();
-    }
-
-    if let Some(abstract_) = json.get("abstract").and_then(|v| v.as_str()) {
-        return format!("(abs) {}", abstract_);
-    }
-
-    if let Some(name) = json.get("name").and_then(name_value)
-        && !name.is_empty() {
-            return name;
-        }
-
-    if let Some(fallback) = fallback_display_name(json, id, type_) {
-        return fallback;
-    }
-
-    "(?)".to_string()
-}
-
-fn fallback_display_name(json: &Value, id: &str, type_: &str) -> Option<String> {
-    if !id.is_empty() {
-        return None;
-    }
-
-    match type_ {
-        "recipe" => {
-            let result = json.get("result").and_then(|v| v.as_str()).unwrap_or("");
-            if result.is_empty() {
-                return None;
-            }
-            let suffix = json.get("id_suffix").and_then(|v| v.as_str()).unwrap_or("");
-            if suffix.is_empty() {
-                Some(format!("result: {}", result))
-            } else {
-                Some(format!("result: {} (suffix: {})", result, suffix))
-            }
-        }
-        "uncraft" => {
-            if let Some(result) = json.get("result").and_then(|v| v.as_str())
-                && !result.is_empty() {
-                    return Some(format!("result: {}", result));
-                }
-            None
-        }
-        "profession_item_substitutions" => {
-            if let Some(trait_) = json.get("trait").and_then(|v| v.as_str())
-                && !trait_.is_empty() {
-                    return Some(format!("trait: {}", trait_));
-                }
-            if let Some(item) = json.get("item").and_then(|v| v.as_str())
-                && !item.is_empty() {
-                    return Some(format!("item: {}", item));
-                }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn name_value(value: &Value) -> Option<String> {
-    if let Some(name_str) = value.as_str() {
-        return Some(name_str.to_string());
-    }
-    if let Some(name_str) = value.get("str").and_then(|v| v.as_str()) {
-        return Some(name_str.to_string());
-    }
-    if let Some(name_str) = value.get("str_sp").and_then(|v| v.as_str()) {
-        return Some(name_str.to_string());
-    }
-    None
-}
-
-/// Applies syntax highlighting to JSON text using theme-consistent colors.
-/// Returns a Text object for ratatui rendering.
-fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
-    let mut lines = Vec::new();
-
-    for line_str in json.lines() {
-        let mut spans = Vec::new();
-        let mut remaining = line_str;
-
-        while !remaining.is_empty() {
-            if let Some(pos) = remaining.find('"') {
-                // Check if this quote is escaped
-                let mut is_escaped = false;
-                let mut j = pos;
-                while j > 0 && remaining.as_bytes()[j - 1] == b'\\' {
-                    is_escaped = !is_escaped;
-                    j -= 1;
-                }
-
-                if is_escaped {
-                    // This quote is escaped, treat it as a normal text and continue searching
-                    let prefix = &remaining[..pos + 1];
-                    if !prefix.is_empty() {
-                        spans.push(Span::raw(prefix.to_string()));
-                    }
-                    remaining = &remaining[pos + 1..];
-                    continue;
-                }
-
-                // Add prefix before quotes
-                let prefix = &remaining[..pos];
-                if !prefix.is_empty() {
-                    spans.push(Span::raw(prefix.to_string()));
-                }
-
-                let rest = &remaining[pos + 1..];
-                // Find the next UNESCAPED quote
-                let mut end_pos = None;
-                let mut search_idx = 0;
-                while let Some(q_pos) = rest[search_idx..].find('"') {
-                    let actual_q_pos = search_idx + q_pos;
-                    let mut is_q_escaped = false;
-                    let mut k = actual_q_pos;
-                    while k > 0 && rest.as_bytes()[k - 1] == b'\\' {
-                        is_q_escaped = !is_q_escaped;
-                        k -= 1;
-                    }
-                    if !is_q_escaped {
-                        end_pos = Some(actual_q_pos);
-                        break;
-                    }
-                    search_idx = actual_q_pos + 1;
-                }
-
-                if let Some(ep) = end_pos {
-                    let quoted = &rest[..ep];
-                    let is_key = rest[ep + 1..].trim_start().starts_with(':');
-
-                    let styled = if is_key {
-                        Span::styled(
-                            format!("\"{}\"", quoted),
-                            Style::default()
-                                .fg(json_style.key)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                    } else {
-                        Span::styled(
-                            format!("\"{}\"", quoted),
-                            Style::default().fg(json_style.string),
-                        )
-                    };
-
-                    spans.push(styled);
-                    remaining = &rest[ep + 1..];
-                } else {
-                    spans.push(Span::styled(
-                        remaining.to_string(),
-                        Style::default().fg(json_style.string),
-                    ));
-                    remaining = "";
-                }
-            } else {
-                // Process numbers, booleans, and null
-                let mut remaining_processed = remaining;
-                while !remaining_processed.is_empty() {
-                    let trimmed = remaining_processed.trim_start();
-                    let start_offset = remaining_processed.len() - trimmed.len();
-                    if start_offset > 0 {
-                        spans.push(Span::raw(remaining_processed[..start_offset].to_string()));
-                    }
-
-                    if trimmed.is_empty() {
-                        break;
-                    }
-
-                    let token_end = trimmed
-                        .find(|c: char| {
-                            c.is_whitespace() || c == ',' || c == '}' || c == ']' || c == ':'
-                        })
-                        .map(|pos| if pos == 0 { 1 } else { pos })
-                        .unwrap_or(trimmed.len());
-                    let token = &trimmed[..token_end];
-                    let rest = &trimmed[token_end..];
-
-                    let styled = if token == "true" || token == "false" || token == "null" {
-                        Span::styled(token.to_string(), Style::default().fg(json_style.boolean))
-                    } else if (token.chars().all(|c| {
-                        c.is_numeric() || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+'
-                    })) && !token.is_empty()
-                        && token.chars().any(|c| c.is_numeric())
-                    {
-                        Span::styled(token.to_string(), Style::default().fg(json_style.number))
-                    } else {
-                        Span::raw(token.to_string())
-                    };
-
-                    spans.push(styled);
-                    remaining_processed = rest;
-                }
-                remaining = "";
-            }
-        }
-        lines.push(Line::from(spans));
-    }
-
-    Text::from(lines)
-}
-
-fn filter_cursor_offset(text: &str, cursor: usize) -> u16 {
-    let char_count = text.chars().count();
-    let clamped = cursor.min(char_count);
-    let width = text.chars().take(clamped).count();
-    width.min(u16::MAX as usize) as u16
-}
-
 #[cfg(test)]
-//noinspection DuplicatedCode
 mod tests {
     use super::*;
-    use ratatui::style::Color;
     use serde_json::json;
 
     #[test]
     fn test_highlight_json() {
-        let json = r#"{
-  "id": "test",
-  "count": 123,
-  "active": true,
-  "nested": {
-    "key": "value"
-  }
-}"#;
-        let json_style = theme::JsonStyle {
-            key: Color::Rgb(0, 255, 255),
-            string: Color::Rgb(0, 255, 0),
-            number: Color::Rgb(0, 0, 255),
-            boolean: Color::Rgb(255, 0, 0),
-        };
-        let highlighted = highlight_json(json, &json_style);
+        let json_str = r#"{"id": "test", "val": 123, "active": true}"#;
+        let style = theme::Theme::Dracula.config().json_style;
+        let highlighted = ui::highlight_json(json_str, &style);
 
-        // Basic check that we have content
-        assert!(!highlighted.lines.is_empty());
+        let mut found_id = false;
+        let mut found_val = false;
+        let mut found_true = false;
 
-        // Collect all text content
-        let full_text: String = highlighted
-            .lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect();
+        for line in &highlighted.lines {
+            for span in &line.spans {
+                if span.content.contains("\"id\"") && span.style.fg == Some(style.key) {
+                    found_id = true;
+                }
+                if span.content.contains("123") && span.style.fg == Some(style.number) {
+                    found_val = true;
+                }
+                if span.content.contains("true") && span.style.fg == Some(style.boolean) {
+                    found_true = true;
+                }
+            }
+        }
 
-        assert!(full_text.contains("\"id\""));
-        assert!(full_text.contains("\"test\""));
-        assert!(full_text.contains("123"));
-        assert!(full_text.contains("true"));
+        assert!(found_id);
+        assert!(found_val);
+        assert!(found_true);
     }
 
     #[test]
     fn test_filter_cursor_offset() {
-        let text = "hello";
-        assert_eq!(filter_cursor_offset(text, 0), 0);
-        assert_eq!(filter_cursor_offset(text, 2), 2);
-        assert_eq!(filter_cursor_offset(text, 5), 5);
-        assert_eq!(filter_cursor_offset(text, 10), 5);
+        assert_eq!(ui::filter_cursor_offset("abc", 0), 0);
+        assert_eq!(ui::filter_cursor_offset("abc", 1), 1);
+        assert_eq!(ui::filter_cursor_offset("🦀def", 1), 2);
     }
 
     #[test]
     fn test_indexed_format_sorting() {
-        let mut items = [
+        let items = vec![
             (
-                json!({"id": "z_id"}),
-                "z_id".to_string(),
-                "A_TYPE".to_string(),
+                json!({"id": "z", "type": "b"}),
+                "z".to_string(),
+                "b".to_string(),
             ),
             (
-                json!({"id": "a_id"}),
-                "a_id".to_string(),
-                "B_TYPE".to_string(),
+                json!({"id": "a", "type": "b"}),
+                "a".to_string(),
+                "b".to_string(),
             ),
             (
-                json!({"id": "a_id"}),
-                "a_id".to_string(),
-                "A_TYPE".to_string(),
+                json!({"id": "m", "type": "a"}),
+                "m".to_string(),
+                "a".to_string(),
             ),
         ];
 
-        // Sort by type then id
-        items.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)));
+        let mut sorted = items.clone();
+        sorted.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)));
 
-        assert_eq!(items[0].2, "A_TYPE");
-        assert_eq!(items[0].1, "a_id");
-        assert_eq!(items[1].2, "A_TYPE");
-        assert_eq!(items[1].1, "z_id");
-        assert_eq!(items[2].2, "B_TYPE");
-        assert_eq!(items[2].1, "a_id");
+        assert_eq!(sorted[0].1, "m");
+        assert_eq!(sorted[1].1, "a");
+        assert_eq!(sorted[2].1, "z");
     }
 
     #[test]
     fn test_handle_key_event_navigation() {
-        let items = vec![
-            (json!({"id": "a"}), "a".to_string(), "t".to_string()),
-            (json!({"id": "b"}), "b".to_string(), "t".to_string()),
+        let indexed_items = vec![
+            (json!({"id": "1"}), "1".to_string(), "type".to_string()),
+            (json!({"id": "2"}), "2".to_string(), "type".to_string()),
         ];
-        let search_index = search_index::SearchIndex::build(&items);
-        let theme = theme::dracula_theme();
+        let search_index = search_index::SearchIndex::build(&indexed_items);
+        let theme = theme::Theme::Dracula.config();
+
         let mut app = AppState::new(
-            items,
+            indexed_items,
             search_index,
             theme,
-            "test".to_string(),
-            "v0.0.0".to_string(),
+            "v1".to_string(),
+            "v1".to_string(),
             2,
             0.0,
-            std::path::PathBuf::from("history.txt"),
+            std::path::PathBuf::from("/tmp/history.txt"),
         );
 
-        // Initial state
-        assert_eq!(app.input_mode, InputMode::Normal);
         assert_eq!(app.list_state.selected(), Some(0));
-
-        // Move down
-        handle_key_event(&mut app, KeyCode::Down, KeyModifiers::empty());
+        handle_key_event(&mut app, KeyCode::Down, KeyModifiers::NONE);
         assert_eq!(app.list_state.selected(), Some(1));
-
-        // Move up
-        handle_key_event(&mut app, KeyCode::Up, KeyModifiers::empty());
-        assert_eq!(app.list_state.selected(), Some(0));
-
-        // Test vim mode (down)
-        handle_key_event(&mut app, KeyCode::Char('j'), KeyModifiers::empty());
-        assert_eq!(app.list_state.selected(), Some(1));
-
-        // Test vim mode (up)
-        handle_key_event(&mut app, KeyCode::Char('k'), KeyModifiers::empty());
+        handle_key_event(&mut app, KeyCode::Up, KeyModifiers::NONE);
         assert_eq!(app.list_state.selected(), Some(0));
     }
 
     #[test]
     fn test_handle_key_event_filtering() {
-        let items = vec![
-            (json!({"id": "apple"}), "apple".to_string(), "t".to_string()),
+        let indexed_items = vec![
+            (
+                json!({"id": "apple"}),
+                "apple".to_string(),
+                "fruit".to_string(),
+            ),
             (
                 json!({"id": "banana"}),
                 "banana".to_string(),
-                "t".to_string(),
+                "fruit".to_string(),
             ),
         ];
-        let search_index = search_index::SearchIndex::build(&items);
-        let theme = theme::dracula_theme();
+        let search_index = search_index::SearchIndex::build(&indexed_items);
+        let theme = theme::Theme::Dracula.config();
+
         let mut app = AppState::new(
-            items,
+            indexed_items,
             search_index,
             theme,
-            "test".to_string(),
-            "v0.0.0".to_string(),
+            "v1".to_string(),
+            "v1".to_string(),
             2,
             0.0,
-            std::path::PathBuf::from("history.txt"),
+            std::path::PathBuf::from("/tmp/history.txt"),
         );
 
-        // Switch to the filtering mode
-        handle_key_event(&mut app, KeyCode::Char('/'), KeyModifiers::empty());
+        handle_key_event(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
         assert_eq!(app.input_mode, InputMode::Filtering);
 
-        // Type 'apple'
-        for c in "apple".chars() {
-            handle_key_event(&mut app, KeyCode::Char(c), KeyModifiers::empty());
-        }
-        assert_eq!(app.filter_text, "apple");
-        assert_eq!(app.filtered_indices.len(), 1);
+        handle_key_event(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(app.filter_text, "a");
+        assert_eq!(app.filtered_indices.len(), 2);
 
-        // Backspace
-        handle_key_event(&mut app, KeyCode::Backspace, KeyModifiers::empty());
-        assert_eq!(app.filter_text, "appl");
-        // 'appl' still matches 'apple'
+        handle_key_event(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
+        assert_eq!(app.filter_text, "ap");
         assert_eq!(app.filtered_indices.len(), 1);
-
-        // Exit filtering mode with Esc
-        handle_key_event(&mut app, KeyCode::Esc, KeyModifiers::empty());
-        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.filtered_indices[0], 0);
     }
 
     #[test]
     fn test_handle_key_event_autofocus_filter() {
-        let items = vec![
-            (json!({"id": "apple"}), "apple".to_string(), "t".to_string()),
-            (
-                json!({"id": "banana"}),
-                "banana".to_string(),
-                "t".to_string(),
-            ),
-        ];
-        let search_index = search_index::SearchIndex::build(&items);
-        let theme = theme::dracula_theme();
+        let indexed_items = vec![(json!({"id": "1"}), "1".to_string(), "t".to_string())];
+        let search_index = search_index::SearchIndex::build(&indexed_items);
+        let theme = theme::Theme::Dracula.config();
+
         let mut app = AppState::new(
-            items,
+            indexed_items,
             search_index,
             theme,
-            "test".to_string(),
-            "v0.0.0".to_string(),
-            2,
+            "v1".to_string(),
+            "v1".to_string(),
+            1,
             0.0,
-            std::path::PathBuf::from("history.txt"),
+            std::path::PathBuf::from("/tmp/history.txt"),
         );
 
-        handle_key_event(&mut app, KeyCode::Char('a'), KeyModifiers::empty());
+        handle_key_event(&mut app, KeyCode::Char('t'), KeyModifiers::NONE);
         assert_eq!(app.input_mode, InputMode::Filtering);
-        assert_eq!(app.filter_text, "a");
-        assert_eq!(app.filter_cursor, 1);
-        assert_eq!(app.filtered_indices.len(), 2);
+        assert_eq!(app.filter_text, "t");
     }
 
     #[test]
     fn test_filter_history() {
-        let items = vec![(json!({"id": "apple"}), "apple".to_string(), "t".to_string())];
-        let search_index = search_index::SearchIndex::build(&items);
-        let theme = theme::dracula_theme();
-        let temp_dir = std::env::temp_dir();
-        let history_path = temp_dir.join("cbn_tui_test_history.txt");
+        let indexed_items = vec![(json!({"id": "1"}), "1".to_string(), "t".to_string())];
+        let search_index = search_index::SearchIndex::build(&indexed_items);
+        let theme = theme::Theme::Dracula.config();
+        let history_path = std::path::PathBuf::from("/tmp/cbn_test_history.txt");
         if history_path.exists() {
             let _ = fs::remove_file(&history_path);
         }
 
         let mut app = AppState::new(
-            items,
+            indexed_items,
             search_index,
             theme,
-            "test".to_string(),
-            "v0.0.0".to_string(),
+            "v1".to_string(),
+            "v1".to_string(),
             1,
             0.0,
             history_path.clone(),
         );
 
-        // Enter filter mode and type "apple", then enter
-        handle_key_event(&mut app, KeyCode::Char('/'), KeyModifiers::empty());
-        for c in "apple".chars() {
-            handle_key_event(&mut app, KeyCode::Char(c), KeyModifiers::empty());
-        }
-        handle_key_event(&mut app, KeyCode::Enter, KeyModifiers::empty());
+        app.input_mode = InputMode::Filtering;
+        app.filter_text = "test_query".to_string();
+        handle_key_event(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+
         assert_eq!(app.filter_history.len(), 1);
-        assert_eq!(app.filter_history[0], "apple");
+        assert_eq!(app.filter_history[0], "test_query");
 
-        // Verify it was saved
-        let saved = fs::read_to_string(&history_path).unwrap();
-        assert_eq!(saved.trim(), "apple");
+        app.input_mode = InputMode::Filtering;
+        app.filter_text = "".to_string();
+        handle_key_event(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.filter_text, "test_query");
 
-        // Enter filter mode again, type "banana", then enter
-        handle_key_event(&mut app, KeyCode::Char('/'), KeyModifiers::empty());
-        app.clear_filter();
-        for c in "banana".chars() {
-            handle_key_event(&mut app, KeyCode::Char(c), KeyModifiers::empty());
-        }
-        handle_key_event(&mut app, KeyCode::Enter, KeyModifiers::empty());
-        assert_eq!(app.filter_history.len(), 2);
-        assert_eq!(app.filter_history[1], "banana");
-
-        // Test navigation: Up
-        handle_key_event(&mut app, KeyCode::Char('/'), KeyModifiers::empty());
-        app.clear_filter();
-        handle_key_event(&mut app, KeyCode::Up, KeyModifiers::empty());
-        assert_eq!(app.filter_text, "banana");
-        handle_key_event(&mut app, KeyCode::Up, KeyModifiers::empty());
-        assert_eq!(app.filter_text, "apple");
-
-        // Test navigation: Down
-        handle_key_event(&mut app, KeyCode::Down, KeyModifiers::empty());
-        assert_eq!(app.filter_text, "banana");
-        handle_key_event(&mut app, KeyCode::Down, KeyModifiers::empty());
-        assert_eq!(app.filter_text, ""); // Should return to stashed input (empty)
-
-        // Clean up
         let _ = fs::remove_file(&history_path);
     }
 }

@@ -18,6 +18,7 @@ directories = "6.0"
 reqwest = { version = "0.13.1", features = ["blocking"] }
 tui-scrollview = "0.6"
 foldhash = "0.2.0"
+unicode-width = "0.2"
 
 # The profile that 'dist' will build with
 [profile.dist]
