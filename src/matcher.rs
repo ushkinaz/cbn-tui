@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-/// Represents a parsed search term with optional classifier and exact match flag.
+/// Represents a parsed search term with an optional classifier and exact match flag.
 /// Used to represent individual components of a space-separated search query.
 #[derive(Debug, PartialEq)]
 pub(crate) struct SearchTerm {
@@ -20,7 +20,7 @@ pub(crate) fn parse_search_term(term: &str) -> SearchTerm {
         let classifier = term[..colon_pos].to_string();
         let value_part = &term[colon_pos + 1..];
 
-        // Check if value is quoted (exact match)
+        // Check if the value is quoted (exact match)
         if value_part.starts_with('\'') && value_part.ends_with('\'') && value_part.len() >= 2 {
             SearchTerm {
                 classifier: Some(classifier),
@@ -126,7 +126,7 @@ pub(crate) fn matches_field(json: &Value, field_name: &str, pattern: &str, exact
                 }
             }
             Value::Array(arr) => {
-                // If current is an array, try to traverse through each element
+                // If the current is an array, try to traverse through each element
                 let remaining_parts: Vec<&str> = parts[i..].to_vec();
                 let remaining_path = remaining_parts.join(".");
                 return arr
@@ -134,7 +134,7 @@ pub(crate) fn matches_field(json: &Value, field_name: &str, pattern: &str, exact
                     .any(|item| matches_field(item, &remaining_path, pattern, exact));
             }
             _ => {
-                // Current value is not an object or array, can't traverse further
+                // The current value is not an object or array, can't traverse further
                 return false;
             }
         }
@@ -157,7 +157,7 @@ pub fn search_with_index(
         return (0..items.len()).collect();
     }
 
-    // Parse all search terms once (not per item)
+    // Parse all search terms at once (not per item)
     let terms: Vec<SearchTerm> = query.split_whitespace().map(parse_search_term).collect();
 
     // Start with all items, then intersect with results from each term
@@ -209,7 +209,7 @@ pub fn search_with_index(
                     prev.retain(|k| matches.contains(k));
                     prev
                 } else {
-                    // matches is smaller (or equal): iterate matches and keep only elements in prev
+                    // matches are smaller (or equal): iterate matches and keep only elements in prev
                     // We can reuse matches' allocation since we own it
                     let mut m = matches;
                     m.retain(|k| prev.contains(k));
@@ -646,7 +646,7 @@ mod tests {
 
         let index = crate::search_index::SearchIndex::build(&items);
 
-        // Should find items with "EMITTER" in flags array
+        // Should find items with "EMITTER" in the flags array
         let results = search_with_index(&index, &items, "EMITTER");
         assert!(!results.is_empty(), "Should find EMITTER in array");
 
@@ -721,7 +721,7 @@ mod tests {
         for idx in results {
             let i = idx; // items are indexed 0..99
             assert!(i >= 10); // common
-            assert!(i % 2 == 0); // even
+            assert_eq!(i % 2, 0); // even
         }
 
         // Search for "even common" (reverse order)
@@ -736,7 +736,7 @@ mod tests {
         assert_eq!(results3.len(), 5);
         for idx in results3 {
             assert!(idx < 10);
-            assert!(idx % 2 == 0);
+            assert_eq!(idx % 2, 0);
         }
     }
 }
