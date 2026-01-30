@@ -2,7 +2,7 @@
 name = "cbn-tui"
 description = "TUI browser for 'Cataclysm: Bright Nights' JSON data."
 homepage = "https://github.com/ushkinaz/cbn-tui"
-version = "0.2.0"
+version = "0.3.0"
 repository = "https://github.com/ushkinaz/cbn-tui"
 authors = ["Ushkinaz <ushkinaz@gmail.com>"]
 edition = "2024"
