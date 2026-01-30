@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::time::Duration;
 
 /// Core metadata for a game build, flattened from various JSON sources.
@@ -26,6 +26,12 @@ pub struct Root {
     pub build: BuildInfo,
     /// The actual game data items.
     pub data: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DownloadProgress {
+    pub downloaded: u64,
+    pub total: Option<u64>,
 }
 
 impl<'de> Deserialize<'de> for BuildInfo {
@@ -88,6 +94,13 @@ pub fn get_data_dir() -> Result<std::path::PathBuf> {
 }
 
 pub fn fetch_builds(force: bool) -> Result<Vec<BuildInfo>> {
+    fetch_builds_with_progress(force, |_| {})
+}
+
+pub fn fetch_builds_with_progress<F>(force: bool, mut on_progress: F) -> Result<Vec<BuildInfo>>
+where
+    F: FnMut(DownloadProgress),
+{
     let cache_dir = get_cache_dir()?;
     let builds_path = cache_dir.join("builds.json");
 
@@ -102,15 +115,15 @@ pub fn fetch_builds(force: bool) -> Result<Vec<BuildInfo>> {
     }
 
     let content = if should_download {
+        let client = http_client()?;
         let url = "https://data.cataclysmbn-guide.com/builds.json";
-        let response = reqwest::blocking::get(url)?;
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to download builds list: {}", response.status());
-        }
-        let bytes = response.bytes()?;
-        fs::write(&builds_path, &bytes)?;
-        String::from_utf8(bytes.to_vec())?
+        download_to_path(&client, url, &builds_path, Some(&mut on_progress))?;
+        fs::read_to_string(&builds_path)?
     } else {
+        on_progress(DownloadProgress {
+            downloaded: 1,
+            total: Some(1),
+        });
         fs::read_to_string(&builds_path)?
     };
 
@@ -119,7 +132,14 @@ pub fn fetch_builds(force: bool) -> Result<Vec<BuildInfo>> {
     Ok(builds)
 }
 
-pub fn fetch_game_data(version: &str, force: bool) -> Result<std::path::PathBuf> {
+pub fn fetch_game_data_with_progress<F>(
+    version: &str,
+    force: bool,
+    mut on_progress: F,
+) -> Result<std::path::PathBuf>
+where
+    F: FnMut(DownloadProgress),
+{
     let cache_dir = get_cache_dir()?;
     let version_cache_dir = cache_dir.join(version);
     fs::create_dir_all(&version_cache_dir)?;
@@ -146,20 +166,64 @@ pub fn fetch_game_data(version: &str, force: bool) -> Result<std::path::PathBuf>
     }
 
     if should_download {
+        let client = http_client()?;
         let url = format!(
             "https://data.cataclysmbn-guide.com/data/{}/all.json",
             version
         );
-        println!("Downloading data for {} from {}...", version, url);
-        let response = reqwest::blocking::get(url)?;
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to download data: {}", response.status());
-        }
-        let bytes = response.bytes()?;
-        fs::write(&target_path, bytes)?;
+        download_to_path(&client, &url, &target_path, Some(&mut on_progress))?;
+    } else {
+        on_progress(DownloadProgress {
+            downloaded: 1,
+            total: Some(1),
+        });
     }
 
     Ok(target_path)
+}
+
+fn download_to_path(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    path: &std::path::Path,
+    mut on_progress: Option<&mut dyn FnMut(DownloadProgress)>,
+) -> Result<()> {
+    let mut response = client.get(url).send()?;
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to download {}: {}", url, response.status());
+    }
+    let total = response.content_length();
+    let mut file = fs::File::create(path)?;
+    let mut downloaded = 0u64;
+    let mut buffer = [0u8; 65536];
+
+    if let Some(cb) = on_progress.as_deref_mut() {
+        cb(DownloadProgress {
+            downloaded,
+            total,
+        });
+    }
+
+    loop {
+        let read = response.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..read])?;
+        downloaded += read as u64;
+        if let Some(cb) = on_progress.as_deref_mut() {
+            cb(DownloadProgress {
+                downloaded,
+                total,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn http_client() -> Result<reqwest::blocking::Client> {
+    Ok(reqwest::blocking::Client::builder().build()?)
 }
 
 pub fn load_root(file_path: &str) -> Result<Root> {

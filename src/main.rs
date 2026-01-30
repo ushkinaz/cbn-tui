@@ -14,6 +14,7 @@ use serde_json::Value;
 use std::fs;
 use std::io;
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 use tui_scrollview::ScrollViewState;
 
 mod data;
@@ -69,6 +70,26 @@ pub enum InputMode {
     Filtering,
 }
 
+#[derive(Debug, Clone)]
+pub struct VersionEntry {
+    pub label: String,
+    pub version: String,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgressStage {
+    pub label: String,
+    pub ratio: f64,
+    pub done: bool,
+}
+
+#[derive(Debug, Clone)]
+enum AppAction {
+    OpenVersionPicker,
+    SwitchVersion(String),
+}
+
 /// Application state for the Ratatui app.
 pub struct AppState {
     /// All loaded items in indexed format (json, id, type)
@@ -89,8 +110,12 @@ pub struct AppState {
     pub theme: theme::ThemeConfig,
     /// Resolved game version (from JSON tag_name)
     pub game_version: String,
+    /// Requested game version key (stable/nightly/build number)
+    pub game_version_key: String,
     /// App version string
     pub app_version: String,
+    /// Whether to force downloads when switching
+    pub force_download: bool,
     /// Number of items in the full dataset
     pub total_items: usize,
     /// Time taken to build the index
@@ -105,6 +130,18 @@ pub struct AppState {
     pub should_quit: bool,
     /// Whether help overlay is visible
     pub show_help: bool,
+    /// Whether version picker is visible
+    pub show_version_picker: bool,
+    /// List of available versions for the picker
+    pub version_entries: Vec<VersionEntry>,
+    /// Selection state for version picker
+    pub version_list_state: ListState,
+    /// Whether progress modal is visible
+    pub show_progress: bool,
+    /// Progress modal title
+    pub progress_title: String,
+    /// Progress stages for modal display
+    pub progress_stages: Vec<ProgressStage>,
     /// Previous search expressions
     pub filter_history: Vec<String>,
     /// Current index in history during navigation
@@ -113,6 +150,8 @@ pub struct AppState {
     pub stashed_input: String,
     /// Path to history file
     pub history_path: std::path::PathBuf,
+    /// Pending action to execute after input handling
+    pending_action: Option<AppAction>,
 }
 
 impl AppState {
@@ -122,7 +161,9 @@ impl AppState {
         search_index: search_index::SearchIndex,
         theme: theme::ThemeConfig,
         game_version: String,
+        game_version_key: String,
         app_version: String,
+        force_download: bool,
         total_items: usize,
         index_time_ms: f64,
         history_path: std::path::PathBuf,
@@ -145,7 +186,9 @@ impl AppState {
             input_mode: InputMode::Normal,
             theme,
             game_version,
+            game_version_key,
             app_version,
+            force_download,
             total_items,
             index_time_ms,
             details_scroll_state: ScrollViewState::default(),
@@ -153,10 +196,17 @@ impl AppState {
             details_line_count: 0,
             should_quit: false,
             show_help: false,
+            show_version_picker: false,
+            version_entries: Vec::new(),
+            version_list_state: ListState::default(),
+            show_progress: false,
+            progress_title: String::new(),
+            progress_stages: Vec::new(),
             filter_history: Vec::new(),
             history_index: None,
             stashed_input: String::new(),
             history_path,
+            pending_action: None,
         };
         app.load_history();
         app.refresh_details();
@@ -301,6 +351,65 @@ impl AppState {
         self.refresh_details();
     }
 
+    fn apply_new_dataset(
+        &mut self,
+        indexed_items: Vec<(Value, String, String)>,
+        search_index: search_index::SearchIndex,
+        total_items: usize,
+        index_time_ms: f64,
+        game_version: String,
+        game_version_key: String,
+    ) {
+        let filter_text = self.filter_text.clone();
+        let filter_cursor = self.filter_cursor.min(filter_text.chars().count());
+
+        self.indexed_items = indexed_items;
+        self.search_index = search_index;
+        self.total_items = total_items;
+        self.index_time_ms = index_time_ms;
+        self.game_version = game_version;
+        self.game_version_key = game_version_key;
+        self.filter_text = filter_text;
+        self.filter_cursor = filter_cursor;
+        self.update_filter();
+    }
+
+    fn start_progress(&mut self, title: impl Into<String>, stages: &[&str]) {
+        self.show_progress = true;
+        self.progress_title = title.into();
+        self.progress_stages = stages
+            .iter()
+            .map(|label| ProgressStage {
+                label: (*label).to_string(),
+                ratio: 0.0,
+                done: false,
+            })
+            .collect();
+    }
+
+    fn update_stage(&mut self, label: &str, ratio: f64) {
+        if let Some(stage) = self
+            .progress_stages
+            .iter_mut()
+            .find(|stage| stage.label == label)
+        {
+            stage.ratio = ratio.clamp(0.0, 1.0);
+            if stage.ratio >= 1.0 {
+                stage.done = true;
+            }
+        }
+    }
+
+    fn finish_stage(&mut self, label: &str) {
+        self.update_stage(label, 1.0);
+    }
+
+    fn clear_progress(&mut self) {
+        self.show_progress = false;
+        self.progress_title.clear();
+        self.progress_stages.clear();
+    }
+
     #[cfg(test)]
     #[allow(dead_code)]
     fn clear_filter(&mut self) {
@@ -354,61 +463,6 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let file_path = if let Some(file) = args.file.as_ref() {
-        file.clone()
-    } else {
-        data::fetch_game_data(&args.game, args.force)?
-            .to_string_lossy()
-            .to_string()
-    };
-
-    println!("Loading data from {}...", file_path);
-    let root = data::load_root(&file_path)?;
-    let total_items = root.data.len();
-
-    // Determine version label
-    let game_version_label = if args.file.is_some() && args.game == "nightly" {
-        root.build.tag_name.clone()
-    } else {
-        let requested = &args.game;
-        if !requested.is_empty()
-            && requested != &root.build.build_number
-            && requested != &root.build.tag_name
-        {
-            format!("{}:{}", requested, root.build.tag_name)
-        } else {
-            root.build.tag_name.clone()
-        }
-    };
-
-    println!("Building search index for {} items...", total_items);
-    let start = std::time::Instant::now();
-
-    // Convert to indexed format (json, id, type)
-    let mut indexed_items: Vec<(Value, String, String)> = root
-        .data
-        .into_iter()
-        .map(|v| {
-            let id = v
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let type_ = v
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            (v, id, type_)
-        })
-        .collect();
-
-    indexed_items.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)));
-
-    let search_index = search_index::SearchIndex::build(&indexed_items);
-    let index_time_ms = start.elapsed().as_secs_f64() * 1000.0;
-    println!("Index built in {:.2}ms", index_time_ms);
-
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -417,17 +471,22 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = AppState::new(
-        indexed_items,
-        search_index,
+        Vec::new(),
+        search_index::SearchIndex::new(),
         theme,
-        game_version_label,
+        "loading".to_string(),
+        args.game.clone(),
         app_version,
-        total_items,
-        index_time_ms,
+        args.force,
+        0,
+        0.0,
         history_path,
     );
 
-    let res = run_app(&mut terminal, &mut app);
+    let res = (|| -> Result<()> {
+        load_initial_data(&mut terminal, &mut app, &args)?;
+        run_app(&mut terminal, &mut app)
+    })();
 
     // Restore terminal
     disable_raw_mode()?;
@@ -458,6 +517,9 @@ where
         match event::read()? {
             Event::Key(key) => {
                 handle_key_event(app, key.code, key.modifiers);
+                if let Some(action) = app.pending_action.take() {
+                    handle_action(terminal, app, action)?;
+                }
                 terminal.draw(|f| ui::ui(f, app))?;
             }
             Event::Resize(_, _) => {
@@ -475,9 +537,36 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
         app.update_filter();
     }
 
+    if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('g') {
+        app.show_help = false;
+        app.show_version_picker = false;
+        app.input_mode = InputMode::Normal;
+        app.history_index = None;
+        app.pending_action = Some(AppAction::OpenVersionPicker);
+        return;
+    }
+
     if app.show_help {
         if matches!(code, KeyCode::Char('?') | KeyCode::Esc) {
             app.show_help = false;
+        }
+        return;
+    }
+
+    if app.show_version_picker {
+        match code {
+            KeyCode::Esc => app.show_version_picker = false,
+            KeyCode::Up | KeyCode::Char('k') => app.version_list_state.select_previous(),
+            KeyCode::Down | KeyCode::Char('j') => app.version_list_state.select_next(),
+            KeyCode::Enter => {
+                if let Some(idx) = app.version_list_state.selected()
+                    && let Some(entry) = app.version_entries.get(idx)
+                {
+                    app.pending_action =
+                        Some(AppAction::SwitchVersion(entry.version.clone()));
+                }
+            }
+            _ => {}
         }
         return;
     }
@@ -590,6 +679,307 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
     }
 }
 
+fn load_initial_data<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut AppState,
+    args: &Args,
+) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    load_game_data_with_ui(
+        terminal,
+        app,
+        args.file.as_deref(),
+        &args.game,
+        args.force,
+    )
+}
+
+fn handle_action<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut AppState,
+    action: AppAction,
+) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    match action {
+        AppAction::OpenVersionPicker => {
+            let builds = fetch_builds_with_ui(terminal, app, app.force_download)?;
+            app.version_entries = build_version_entries(builds);
+            let selected = app
+                .version_entries
+                .iter()
+                .position(|entry| entry.version == app.game_version_key)
+                .unwrap_or(0);
+            app.version_list_state.select(
+                if app.version_entries.is_empty() {
+                    None
+                } else {
+                    Some(selected)
+                },
+            );
+            app.show_version_picker = true;
+        }
+        AppAction::SwitchVersion(version) => {
+            app.show_version_picker = false;
+            if version == app.game_version_key {
+                return Ok(());
+            }
+            load_game_data_with_ui(terminal, app, None, &version, app.force_download)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn fetch_builds_with_ui<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut AppState,
+    force: bool,
+) -> Result<Vec<data::BuildInfo>>
+where
+    B::Error: Send + Sync + 'static,
+{
+    app.start_progress("Loading versions", &["Downloading"]);
+    terminal.draw(|f| ui::ui(f, app))?;
+
+    let mut last_ratio = -1.0;
+    let mut last_draw = Instant::now();
+    let mut draw_error: Option<anyhow::Error> = None;
+    let builds = data::fetch_builds_with_progress(force, |progress| {
+        let ratio = progress_ratio(progress);
+        let elapsed_ok = last_draw.elapsed() >= Duration::from_millis(120);
+        let ratio_ok = (ratio - last_ratio).abs() >= 0.01;
+        let should_draw = if progress.total.is_some() {
+            ratio_ok || elapsed_ok
+        } else {
+            elapsed_ok
+        };
+        if !should_draw {
+            return;
+        }
+        if draw_error.is_none() {
+            app.update_stage("Downloading", ratio);
+            if let Err(err) = terminal.draw(|f| ui::ui(f, app)) {
+                draw_error = Some(anyhow::Error::from(err));
+            } else {
+                last_draw = Instant::now();
+                last_ratio = ratio;
+            }
+        }
+    })?;
+
+    if let Some(err) = draw_error {
+        return Err(err);
+    }
+
+    app.finish_stage("Downloading");
+    terminal.draw(|f| ui::ui(f, app))?;
+    app.clear_progress();
+
+    Ok(builds)
+}
+
+fn load_game_data_with_ui<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut AppState,
+    file_path: Option<&str>,
+    version: &str,
+    force: bool,
+) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    let root = if let Some(file) = file_path {
+        app.start_progress("Loading data", &["Parsing", "Indexing"]);
+        terminal.draw(|f| ui::ui(f, app))?;
+        data::load_root(file)?
+    } else {
+        app.start_progress("Loading data", &["Downloading", "Parsing", "Indexing"]);
+        terminal.draw(|f| ui::ui(f, app))?;
+
+        let mut last_ratio = -1.0;
+        let mut last_draw = Instant::now();
+        let mut draw_error: Option<anyhow::Error> = None;
+        let path = data::fetch_game_data_with_progress(version, force, |progress| {
+            let ratio = progress_ratio(progress);
+            let elapsed_ok = last_draw.elapsed() >= Duration::from_millis(120);
+            let ratio_ok = (ratio - last_ratio).abs() >= 0.01;
+            let should_draw = if progress.total.is_some() {
+                ratio_ok || elapsed_ok
+            } else {
+                elapsed_ok
+            };
+            if !should_draw {
+                return;
+            }
+            if draw_error.is_none() {
+                app.update_stage("Downloading", ratio);
+                if let Err(err) = terminal.draw(|f| ui::ui(f, app)) {
+                    draw_error = Some(anyhow::Error::from(err));
+                } else {
+                    last_draw = Instant::now();
+                    last_ratio = ratio;
+                }
+            }
+        })?;
+
+        if let Some(err) = draw_error {
+            return Err(err);
+        }
+
+        app.finish_stage("Downloading");
+        terminal.draw(|f| ui::ui(f, app))?;
+        data::load_root(&path.to_string_lossy())?
+    };
+
+    app.finish_stage("Parsing");
+    terminal.draw(|f| ui::ui(f, app))?;
+
+    let game_version_label = resolve_game_version_label(version, file_path, &root);
+    let total_items = root.data.len();
+    let (indexed_items, search_index, index_time_ms) =
+        build_index_with_progress(terminal, app, root.data)?;
+    app.apply_new_dataset(
+        indexed_items,
+        search_index,
+        total_items,
+        index_time_ms,
+        game_version_label,
+        version.to_string(),
+    );
+
+    app.finish_stage("Indexing");
+    terminal.draw(|f| ui::ui(f, app))?;
+    app.clear_progress();
+
+    Ok(())
+}
+
+fn build_index_with_progress<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut AppState,
+    data: Vec<Value>,
+) -> Result<(Vec<(Value, String, String)>, search_index::SearchIndex, f64)>
+where
+    B::Error: Send + Sync + 'static,
+{
+    let total = data.len();
+    let start = std::time::Instant::now();
+    let mut last_draw = Instant::now();
+    let mut indexed_items: Vec<(Value, String, String)> = Vec::with_capacity(total);
+
+    for (idx, v) in data.into_iter().enumerate() {
+        let id = v
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let type_ = v
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        indexed_items.push((v, id, type_));
+
+        if total > 0 && (idx % 500 == 0 || idx + 1 == total) {
+            let ratio = (idx + 1) as f64 / total as f64 * 0.4;
+            app.update_stage("Indexing", ratio);
+            if last_draw.elapsed() >= Duration::from_millis(120) || idx + 1 == total {
+                terminal.draw(|f| ui::ui(f, app))?;
+                last_draw = Instant::now();
+            }
+        }
+    }
+
+    indexed_items.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)));
+
+    let mut draw_error: Option<anyhow::Error> = None;
+    let mut last_ratio = -1.0;
+    let search_index = search_index::SearchIndex::build_with_progress(
+        &indexed_items,
+        |processed, total_items| {
+            let ratio = if total_items > 0 {
+                0.4 + 0.6 * (processed as f64 / total_items as f64)
+            } else {
+                1.0
+            };
+            let ratio_ok = (ratio - last_ratio).abs() >= 0.01;
+            let elapsed_ok = last_draw.elapsed() >= Duration::from_millis(120);
+            let should_draw = ratio_ok || elapsed_ok || processed == total_items;
+            if draw_error.is_none() && should_draw {
+                app.update_stage("Indexing", ratio);
+                if let Err(err) = terminal.draw(|f| ui::ui(f, app)) {
+                    draw_error = Some(anyhow::Error::from(err));
+                } else {
+                    last_draw = Instant::now();
+                    last_ratio = ratio;
+                }
+            }
+        },
+    );
+
+    if let Some(err) = draw_error {
+        return Err(err);
+    }
+
+    let index_time_ms = start.elapsed().as_secs_f64() * 1000.0;
+    Ok((indexed_items, search_index, index_time_ms))
+}
+
+fn resolve_game_version_label(version: &str, file_path: Option<&str>, root: &data::Root) -> String {
+    if file_path.is_some() && version == "nightly" {
+        root.build.tag_name.clone()
+    } else if !version.is_empty()
+        && version != root.build.build_number
+        && version != root.build.tag_name
+    {
+        format!("{}:{}", version, root.build.tag_name)
+    } else {
+        root.build.tag_name.clone()
+    }
+}
+
+fn build_version_entries(builds: Vec<data::BuildInfo>) -> Vec<VersionEntry> {
+    let mut entries = Vec::new();
+    entries.push(VersionEntry {
+        label: "stable".to_string(),
+        version: "stable".to_string(),
+        detail: None,
+    });
+    entries.push(VersionEntry {
+        label: "nightly".to_string(),
+        version: "nightly".to_string(),
+        detail: None,
+    });
+
+    for build in builds {
+        if build.build_number == "stable" || build.build_number == "nightly" {
+            continue;
+        }
+        entries.push(VersionEntry {
+            label: build.build_number.clone(),
+            version: build.build_number,
+            detail: None,
+        });
+    }
+
+    entries
+}
+
+fn progress_ratio(progress: data::DownloadProgress) -> f64 {
+    if let Some(total) = progress.total {
+        if total > 0 {
+            return progress.downloaded as f64 / total as f64;
+        }
+    }
+
+    let downloaded = progress.downloaded as f64;
+    downloaded / (downloaded + 1_000_000.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -674,6 +1064,8 @@ mod tests {
             theme,
             "v1".to_string(),
             "v1".to_string(),
+            "v1".to_string(),
+            false,
             2,
             0.0,
             std::path::PathBuf::from("/tmp/history.txt"),
@@ -709,6 +1101,8 @@ mod tests {
             theme,
             "v1".to_string(),
             "v1".to_string(),
+            "v1".to_string(),
+            false,
             2,
             0.0,
             std::path::PathBuf::from("/tmp/history.txt"),
@@ -739,6 +1133,8 @@ mod tests {
             theme,
             "v1".to_string(),
             "v1".to_string(),
+            "v1".to_string(),
+            false,
             1,
             0.0,
             std::path::PathBuf::from("/tmp/history.txt"),
@@ -765,6 +1161,8 @@ mod tests {
             theme,
             "v1".to_string(),
             "v1".to_string(),
+            "v1".to_string(),
+            false,
             1,
             0.0,
             history_path.clone(),

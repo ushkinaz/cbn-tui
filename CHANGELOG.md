@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Status bar and help overlay**: New status bar plus a help overlay with search syntax guidance.
 - **Improved startup time**: Added caching and expiration logic for game data to significantly reduce startup time for already viewed versions.
 - **Game version listing**: New `--game-versions` flag to list available game builds.
+- **In-app version switcher**: Switch between stable, nightly, and tagged builds with a progress modal.
 
 ### Changes
 

@@ -4,8 +4,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        Block, Borders, Clear, LineGauge, List, ListItem, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
 use serde_json::Value;
@@ -13,7 +13,7 @@ use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::theme;
 use crate::{AppState, InputMode};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Main UI entry point that renders the entire application layout.
 pub fn ui(f: &mut Frame, app: &mut AppState) {
@@ -43,7 +43,11 @@ pub fn ui(f: &mut Frame, app: &mut AppState) {
     // Render status bar
     render_status_bar(f, app, chunks[2]);
 
-    if app.show_help {
+    if app.show_progress {
+        render_progress_modal(f, app);
+    } else if app.show_version_picker {
+        render_version_picker(f, app);
+    } else if app.show_help {
         render_help_overlay(f, app);
     }
 }
@@ -306,6 +310,8 @@ fn render_status_bar_shortcuts(f: &mut Frame, app: &mut AppState, area: Rect) {
     let shortcuts = Line::from(vec![
         Span::styled("/ ", key_style),
         Span::raw("filter  "),
+        Span::styled("Ctrl+G ", key_style),
+        Span::raw("versions  "),
         Span::styled("? ", key_style),
         Span::raw("help  "),
         Span::styled("Esc ", key_style),
@@ -380,7 +386,7 @@ fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(10), // Navigation
+            Constraint::Length(12), // Navigation
             Constraint::Length(1),  // Spacer
             Constraint::Min(0),     // Search Syntax
         ])
@@ -400,9 +406,10 @@ fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
         ("End", "selection to end"),
         ("PgUp | Ctrl+k", "scroll JSON up"),
         ("PgDown | Ctrl+j", "scroll JSON down"),
+        ("Ctrl+G", "version switcher"),
         ("?", "this help"),
-        ("q", "quit"),
         ("Esc", "back / quit"),
+        ("q", "quit"),
     ];
 
     let mut nav_lines = vec![Line::from(Span::styled("Navigation", header_style))];
@@ -447,6 +454,178 @@ fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
         ]),
     ];
     f.render_widget(Paragraph::new(syntax_lines), chunks[2]);
+}
+
+fn render_version_picker(f: &mut Frame, app: &mut AppState) {
+    let area = f.area();
+    let popup_width = area.width.min(64).saturating_sub(4);
+    let popup_height = area.height.min(18).saturating_sub(2);
+    if popup_width == 0 || popup_height == 0 {
+        return;
+    }
+    let popup_rect = Rect::new(
+        area.x + (area.width.saturating_sub(popup_width)) / 2,
+        area.y + (area.height.saturating_sub(popup_height)) / 2,
+        popup_width,
+        popup_height,
+    );
+
+    f.render_widget(Clear, popup_rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(app.theme.border_selected)
+        .style(app.theme.border_selected.bg(app.theme.background))
+        .title(" Game Versions ")
+        .title_style(app.theme.title)
+        .title_bottom(Line::from(" enter select / esc close ").right_aligned());
+
+    let inner_area = block.inner(popup_rect);
+    f.render_widget(block, popup_rect);
+
+    let items: Vec<ListItem> = app
+        .version_entries
+        .iter()
+        .map(|entry| {
+            let mut spans = vec![Span::styled(&entry.label, app.theme.text)];
+            if let Some(detail) = &entry.detail {
+                spans.push(Span::styled(
+                    format!(" ({})", detail),
+                    app.theme.text.add_modifier(Modifier::DIM),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default())
+        .style(app.theme.list_normal)
+        .highlight_style(app.theme.list_selected);
+
+    f.render_stateful_widget(list, inner_area, &mut app.version_list_state);
+}
+
+fn render_progress_modal(f: &mut Frame, app: &mut AppState) {
+    let area = f.area();
+    let stages_len = app.progress_stages.len().max(1) as u16;
+    let popup_width = area.width.min(68).saturating_sub(4);
+    let popup_height = area
+        .height
+        .saturating_sub(2)
+        .min(stages_len + 4);
+    if popup_width == 0 || popup_height == 0 {
+        return;
+    }
+
+    let popup_rect = Rect::new(
+        area.x + (area.width.saturating_sub(popup_width)) / 2,
+        area.y + (area.height.saturating_sub(popup_height)) / 2,
+        popup_width,
+        popup_height,
+    );
+
+    f.render_widget(Clear, popup_rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(app.theme.border_selected)
+        .style(app.theme.border_selected.bg(app.theme.background))
+        .title(format!(" {} ", app.progress_title))
+        .title_style(app.theme.title);
+
+    let inner_area = block.inner(popup_rect);
+    f.render_widget(block, popup_rect);
+
+    let padding_x = 1;
+    let padding_y = 1;
+    let content_area = Rect::new(
+        inner_area.x + padding_x,
+        inner_area.y + padding_y,
+        inner_area.width.saturating_sub(padding_x * 2),
+        inner_area.height.saturating_sub(padding_y * 2),
+    );
+    if content_area.width == 0 || content_area.height == 0 {
+        return;
+    }
+
+    let labels: Vec<String> = app
+        .progress_stages
+        .iter()
+        .map(|stage| {
+            stage.label.clone()
+        })
+        .collect();
+    let mut label_width = labels
+        .iter()
+        .map(|label| label.width())
+        .max()
+        .unwrap_or(0) as u16;
+    let min_gauge_width = 10u16;
+    let percent_width = 4u16;
+    if content_area.width <= min_gauge_width {
+        label_width = 0;
+    } else {
+        let max_label = content_area
+            .width
+            .saturating_sub(min_gauge_width + percent_width + 2);
+        label_width = label_width.min(max_label);
+    }
+    let gap = if label_width > 0 { 1 } else { 0 };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Length(1); stages_len as usize])
+        .split(content_area);
+
+    for (idx, area) in chunks.iter().enumerate() {
+        let stage = app
+            .progress_stages
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| crate::ProgressStage {
+                label: "Working".to_string(),
+                ratio: 0.0,
+                done: false,
+            });
+        let ratio = stage.ratio.clamp(0.0, 1.0);
+        let percent_label = format!("{:.0}%", ratio * 100.0);
+        let row_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(label_width),
+                Constraint::Length(gap),
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(percent_width),
+            ])
+            .split(*area);
+
+        if label_width > 0 {
+            let label = labels
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| "Working 0%".to_string());
+            f.render_widget(
+                Paragraph::new(label).style(app.theme.text),
+                row_chunks[0],
+            );
+        }
+
+        let gauge = LineGauge::default()
+            .filled_style(app.theme.title)
+            .unfilled_style(app.theme.border)
+            .ratio(ratio)
+            .label("");
+        f.render_widget(gauge, row_chunks[2]);
+
+        f.render_widget(
+            Paragraph::new(percent_label)
+                .style(app.theme.text)
+                .alignment(Alignment::Right),
+            row_chunks[4],
+        );
+    }
 }
 
 fn display_name_for_item(json: &Value, id: &str, type_: &str) -> String {

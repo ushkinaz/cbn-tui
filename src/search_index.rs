@@ -75,6 +75,54 @@ impl SearchIndex {
         index
     }
 
+    pub fn build_with_progress<F>(items: &[(Value, String, String)], mut on_progress: F) -> Self
+    where
+        F: FnMut(usize, usize),
+    {
+        let mut index = Self::new();
+        let total = items.len();
+
+        for (idx, (json, id, type_)) in items.iter().enumerate() {
+            if !id.is_empty() {
+                index
+                    .by_id
+                    .entry(id.to_lowercase())
+                    .or_default()
+                    .insert(idx);
+            } else if let Some(abstr) = json.get("abstract").and_then(|v| v.as_str()) {
+                index
+                    .by_id
+                    .entry(abstr.to_lowercase())
+                    .or_default()
+                    .insert(idx);
+            }
+
+            if !type_.is_empty() {
+                index
+                    .by_type
+                    .entry(type_.to_lowercase())
+                    .or_default()
+                    .insert(idx);
+            }
+
+            if let Some(category) = json.get("category").and_then(|v| v.as_str()) {
+                index
+                    .by_category
+                    .entry(category.to_lowercase())
+                    .or_default()
+                    .insert(idx);
+            }
+
+            Self::index_value_recursive(&mut index.word_index, json, idx);
+
+            if idx % 250 == 0 || idx + 1 == total {
+                on_progress(idx + 1, total);
+            }
+        }
+
+        index
+    }
+
     /// Recursively index all string values in JSON for word search
     fn index_value_recursive(
         word_index: &mut HashMap<String, HashSet<usize>>,

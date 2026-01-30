@@ -16,6 +16,7 @@ Terminal User Interface (TUI) browser for **Cataclysm: Bright Nights** JSON data
   - `term1 term2` - Combine multiple terms (AND logic).
 - **Syntax Highlighting**: Beautifully formatted JSON details with syntax coloring for keys, strings, numbers, and booleans.
 - **Seamless Navigation**: Switch focus between the item list, details pane, and search bar using standard keyboard shortcuts.
+- **In-app Version Switcher**: Pick stable, nightly, or tagged releases without restarting the app.
 
 ## ⌨️ Controls
 
@@ -27,6 +28,7 @@ Terminal User Interface (TUI) browser for **Cataclysm: Bright Nights** JSON data
 | `↑` / `↓`             | Move selection or scroll                      |
 | `PageUp` / `PageDown` | Scroll faster (10 items at a time)            |
 | `Enter`               | Confirm or exit input focus                   |
+| `Ctrl+G`              | Open game version switcher                    |
 
 ## 🚀 Usage
 
