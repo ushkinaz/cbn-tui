@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, Clear, LineGauge, List, ListItem, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Wrap,
+        ScrollbarOrientation, ScrollbarState,
     },
 };
 use serde_json::Value;
@@ -164,17 +164,14 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
 
         if content_width > 0 && content_area.height > 0 {
             app.details_content_area = Some(content_area);
-            // Calculate the height required when text is wrapped to content_width
-            let mut wrapped_height = 0;
-            for line in &app.details_text.lines {
-                let line_width = line.width() as u16;
-                if line_width == 0 {
-                    wrapped_height += 1;
-                } else {
-                    wrapped_height += line_width.div_ceil(content_width);
-                }
+
+            // Re-wrap if width changed
+            if app.details_wrapped_width != content_width {
+                app.details_wrapped_annotated = wrap_annotated_lines(&app.details_annotated, content_width);
+                app.details_wrapped_width = content_width;
             }
-            let content_height = wrapped_height;
+
+            let content_height = app.details_wrapped_annotated.len() as u16;
 
             let mut scroll_view = ScrollView::new(Size::new(content_width, content_height))
                 .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
@@ -185,10 +182,9 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
             scroll_view.buf_mut().set_style(scroll_area, app.theme.text);
 
             let content_rect = Rect::new(0, 0, content_width, content_height);
+            let wrapped_text = annotated_to_text(app.details_wrapped_annotated.clone());
             scroll_view.render_widget(
-                Paragraph::new(app.details_text.clone())
-                    .style(app.theme.text)
-                    .wrap(Wrap { trim: false }),
+                Paragraph::new(wrapped_text).style(app.theme.text),
                 content_rect,
             );
 
@@ -727,6 +723,87 @@ pub fn annotated_to_text(annotated: Vec<Vec<AnnotatedSpan>>) -> Text<'static> {
     )
 }
 
+/// Wraps a matrix of AnnotatedSpans into lines that fit within the given width.
+/// Performs simple character-level wrapping.
+pub fn wrap_annotated_lines(
+    lines: &[Vec<AnnotatedSpan>],
+    width: u16,
+) -> Vec<Vec<AnnotatedSpan>> {
+    let mut wrapped = Vec::new();
+    let width = width as usize;
+    if width == 0 {
+        return Vec::new();
+    }
+
+    for line in lines {
+        if line.is_empty() {
+            wrapped.push(Vec::new());
+            continue;
+        }
+
+        let mut current_wrapped_line = Vec::new();
+        let mut current_width = 0;
+
+        for annotated in line {
+            let mut content = &annotated.span.content[..];
+            while !content.is_empty() {
+                let remaining_width = width.saturating_sub(current_width);
+                if remaining_width == 0 {
+                    wrapped.push(current_wrapped_line);
+                    current_wrapped_line = Vec::new();
+                    current_width = 0;
+                    continue;
+                }
+
+                let mut fit_len = 0;
+                let mut fit_width = 0;
+                for c in content.chars() {
+                    let w = UnicodeWidthChar::width(c).unwrap_or(0);
+                    if fit_width + w > remaining_width {
+                        break;
+                    }
+                    fit_len += c.len_utf8();
+                    fit_width += w;
+                }
+
+                if fit_len > 0 {
+                    let part = &content[..fit_len];
+                    current_wrapped_line.push(AnnotatedSpan {
+                        span: Span::styled(part.to_string(), annotated.span.style),
+                        kind: annotated.kind,
+                        key_context: annotated.key_context.clone(),
+                    });
+                    current_width += fit_width;
+                    content = &content[fit_len..];
+                } else {
+                    // Even one character doesn't fit? This should only happen if width is extremely small.
+                    // Push current line and start new one.
+                    if !current_wrapped_line.is_empty() {
+                        wrapped.push(current_wrapped_line);
+                        current_wrapped_line = Vec::new();
+                        current_width = 0;
+                    } else {
+                        // Width is so small not even one char fits. Force-fit one char to avoid infinite loop.
+                        let first_char = content.chars().next().unwrap();
+                        let first_len = first_char.len_utf8();
+                        current_wrapped_line.push(AnnotatedSpan {
+                            span: Span::styled(content[..first_len].to_string(), annotated.span.style),
+                            kind: annotated.kind,
+                            key_context: annotated.key_context.clone(),
+                        });
+                        wrapped.push(current_wrapped_line);
+                        current_wrapped_line = Vec::new();
+                        current_width = 0;
+                        content = &content[first_len..];
+                    }
+                }
+            }
+        }
+        wrapped.push(current_wrapped_line);
+    }
+    wrapped
+}
+
 #[derive(Debug, Default)]
 struct JsonParserState {
     stack: Vec<Option<String>>,
@@ -961,15 +1038,10 @@ fn process_non_quoted(
 pub fn hit_test_details(app: &AppState, column: u16, row: u16) -> Option<&AnnotatedSpan> {
     let area = app.details_content_area?;
     let horizontal_padding = 1;
-    let content_width = area.width.saturating_sub(horizontal_padding * 2);
-
-    if content_width == 0 {
-        return None;
-    }
 
     // Strictly check bounds, excluding the horizontal gutters
     let content_x_start = area.x + horizontal_padding;
-    let content_x_end = content_x_start + content_width;
+    let content_x_end = area.x + area.width - horizontal_padding;
     if column < content_x_start || column >= content_x_end || row < area.y || row >= area.y + area.height {
         return None;
     }
@@ -980,39 +1052,18 @@ pub fn hit_test_details(app: &AppState, column: u16, row: u16) -> Option<&Annota
 
     // Account for scroll offset
     let scroll_offset = app.details_scroll_state.offset();
-    let content_y = rel_y + scroll_offset.y;
-    // Note: horizontal scroll is disabled in render_details (ScrollbarVisibility::Never)
+    let content_y = (rel_y + scroll_offset.y) as usize;
 
-    // Details pane uses wrapping. We need to find which original line AND which wrap-line was clicked.
-    let mut current_wrapped_row = 0;
-    for line_spans in &app.details_annotated {
-        let line_width = line_spans
-            .iter()
-            .map(|s| s.span.width())
-            .sum::<usize>() as u16;
-
-        let wraps = if line_width == 0 {
-            1
-        } else {
-            line_width.div_ceil(content_width)
-        };
-
-        if content_y >= current_wrapped_row && content_y < current_wrapped_row + wraps {
-            // Click is on this original JSON line (possibly wrapped)
-            let wrap_index = content_y - current_wrapped_row;
-            let click_x_in_line = wrap_index * content_width + rel_x;
-
-            let mut current_x = 0;
-            for annotated in line_spans {
-                let span_width = annotated.span.width() as u16;
-                if click_x_in_line >= current_x && click_x_in_line < current_x + span_width {
-                    return Some(annotated);
-                }
-                current_x += span_width;
+    // Details pane now uses pre-wrapped lines
+    if let Some(line) = app.details_wrapped_annotated.get(content_y) {
+        let mut current_x = 0;
+        for annotated in line {
+            let span_width = annotated.span.width() as u16;
+            if rel_x >= current_x && rel_x < current_x + span_width {
+                return Some(annotated);
             }
-            return None;
+            current_x += span_width;
         }
-        current_wrapped_row += wraps;
     }
 
     None

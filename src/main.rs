@@ -130,6 +130,10 @@ pub struct AppState {
     pub details_line_count: usize,
     /// Annotated spans for the current details view (parallel to details_text)
     pub details_annotated: Vec<Vec<crate::ui::AnnotatedSpan>>,
+    /// Pre-wrapped annotated spans for the current content_width (used for rendering and hit-testing)
+    pub details_wrapped_annotated: Vec<Vec<crate::ui::AnnotatedSpan>>,
+    /// Width used for current details_wrapped_annotated
+    pub details_wrapped_width: u16,
     /// Screen region of the JSON content area (set during render)
     pub details_content_area: Option<ratatui::layout::Rect>,
     /// Flag to quit app
@@ -201,6 +205,8 @@ impl AppState {
             details_text: Text::default(),
             details_line_count: 0,
             details_annotated: Vec::new(),
+            details_wrapped_annotated: Vec::new(),
+            details_wrapped_width: 0,
             details_content_area: None,
             should_quit: false,
             show_help: false,
@@ -243,14 +249,12 @@ impl AppState {
         if let Some((json, _, _)) = self.get_selected_item() {
             match serde_json::to_string_pretty(json) {
                 Ok(json_str) => {
-                    self.details_annotated =
-                        ui::highlight_json_annotated(&json_str, &self.theme.json_style);
-                    self.details_text =
-                        ui::annotated_to_text(self.details_annotated.clone());
+                    let annotated = ui::highlight_json_annotated(&json_str, &self.theme.json_style);
+                    self.details_text = ui::annotated_to_text(annotated.clone());
+                    self.details_annotated = annotated;
                     self.details_line_count = self.details_text.lines.len();
                 }
-                Err(e) => {
-                    eprintln!("Error formatting JSON: {}", e);
+                Err(_) => {
                     self.details_text = Text::from("Error formatting JSON");
                     self.details_annotated = Vec::new();
                     self.details_line_count = 1;
@@ -262,6 +266,7 @@ impl AppState {
             self.details_line_count = 1;
         }
         self.details_scroll_state = ScrollViewState::default();
+        self.details_wrapped_width = 0;
     }
 
     /// Clamps the current list selection to valid bounds.
