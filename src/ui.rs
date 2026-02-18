@@ -9,6 +9,7 @@ use ratatui::{
     },
 };
 use serde_json::Value;
+use std::rc::Rc;
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::theme;
@@ -32,7 +33,7 @@ pub struct AnnotatedSpan {
     pub kind: JsonSpanKind,
     /// The JSON key this value belongs to, if the span is a value.
     /// For keys themselves this is the key's own text.
-    pub key_context: Option<String>,
+    pub key_context: Option<Rc<str>>,
 }
 
 /// Main UI entry point that renders the entire application layout.
@@ -165,37 +166,28 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
         if content_width > 0 && content_area.height > 0 {
             app.details_content_area = Some(content_area);
 
-            // Re-wrap if width changed
-            if app.details_wrapped_width != content_width {
-                app.details_wrapped_annotated =
-                    wrap_annotated_lines(&app.details_annotated, content_width);
-                app.details_wrapped_width = content_width;
-            }
-
-            let content_height = app.details_wrapped_annotated.len() as u16;
-
-            let mut scroll_view = ScrollView::new(Size::new(content_width, content_height))
-                .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
-                .horizontal_scrollbar_visibility(ScrollbarVisibility::Never);
-
-            // Match the background of the scroll view buffer to the theme
-            let scroll_area = scroll_view.area();
-            scroll_view.buf_mut().set_style(scroll_area, app.theme.text);
-
-            let content_rect = Rect::new(0, 0, content_width, content_height);
-            // Build temporary Text with borrowed spans to avoid cloning all strings every frame
-            let lines = app.details_wrapped_annotated.iter().map(|line_spans| {
-                Line::from(
-                    line_spans
-                        .iter()
-                        .map(|as_| Span::styled(as_.span.content.as_ref(), as_.span.style))
-                        .collect::<Vec<_>>(),
-                )
-            });
-            scroll_view.render_widget(
-                Paragraph::new(Text::from_iter(lines)).style(app.theme.text),
-                content_rect,
-            );
+                        // Re-wrap if width changed
+                        if app.details_wrapped_width != content_width {
+                            app.details_wrapped_annotated = wrap_annotated_lines(&app.details_annotated, content_width);
+                            app.details_wrapped_text = annotated_to_text(app.details_wrapped_annotated.clone());
+                            app.details_wrapped_width = content_width;
+                        }
+            
+                        let content_height = app.details_wrapped_annotated.len() as u16;
+            
+                        let mut scroll_view = ScrollView::new(Size::new(content_width, content_height))
+                            .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
+                            .horizontal_scrollbar_visibility(ScrollbarVisibility::Never);
+            
+                        // Match the background of the scroll view buffer to the theme
+                        let scroll_area = scroll_view.area();
+                        scroll_view.buf_mut().set_style(scroll_area, app.theme.text);
+            
+                        let content_rect = Rect::new(0, 0, content_width, content_height);
+                        scroll_view.render_widget(
+                            Paragraph::new(app.details_wrapped_text.clone()).style(app.theme.text),
+                            content_rect,
+                        );
 
             // Render ScrollView centered horizontally within content_area using the padding
             let scroll_view_area = Rect::new(
@@ -817,7 +809,7 @@ pub fn wrap_annotated_lines(lines: &[Vec<AnnotatedSpan>], width: u16) -> Vec<Vec
 
 #[derive(Debug, Default)]
 struct JsonParserState {
-    stack: Vec<Option<String>>,
+    stack: Vec<Option<Rc<str>>>,
 }
 
 impl JsonParserState {
@@ -825,13 +817,13 @@ impl JsonParserState {
         Self { stack: vec![None] }
     }
 
-    fn current_key(&self) -> Option<String> {
+    fn current_key(&self) -> Option<Rc<str>> {
         self.stack.last().cloned().flatten()
     }
 
-    fn update_key(&mut self, key: String) {
+    fn update_key(&mut self, key: &str) {
         if let Some(top) = self.stack.last_mut() {
-            *top = Some(key);
+            *top = Some(Rc::from(key));
         }
     }
 
@@ -917,7 +909,7 @@ pub fn highlight_json_annotated(
                     let is_key = rest[ep + 1..].trim_start().starts_with(':');
 
                     if is_key {
-                        state.update_key(quoted.to_string());
+                        state.update_key(quoted);
                         spans.push(AnnotatedSpan {
                             span: Span::styled(
                                 format!("\"{}\"", quoted),
@@ -975,7 +967,7 @@ fn process_non_quoted(
             spans.push(AnnotatedSpan {
                 span: Span::raw(remaining[..start_offset].to_string()),
                 kind: JsonSpanKind::Whitespace,
-                key_context: state.current_key(),
+                key_context: None,
             });
         }
 
@@ -1039,10 +1031,18 @@ fn process_non_quoted(
             )
         };
 
+        let key_context = match kind {
+            JsonSpanKind::Key
+            | JsonSpanKind::StringValue
+            | JsonSpanKind::NumberValue
+            | JsonSpanKind::BooleanValue => state.current_key(),
+            _ => None,
+        };
+
         spans.push(AnnotatedSpan {
             span: styled,
             kind,
-            key_context: state.current_key(),
+            key_context,
         });
         remaining = rest;
     }
@@ -1121,7 +1121,7 @@ mod tests {
         assert_eq!(line[2].span.content, ":");
         assert_eq!(line[4].kind, JsonSpanKind::NumberValue);
         assert_eq!(line[4].span.content, "60");
-        assert_eq!(line[4].key_context, Some("range".to_string()));
+        assert_eq!(line[4].key_context, Some(Rc::from("range")));
     }
 
     #[test]
@@ -1135,7 +1135,7 @@ mod tests {
         assert_eq!(line[0].kind, JsonSpanKind::Key);
         assert_eq!(line[3].kind, JsonSpanKind::StringValue);
         assert_eq!(line[3].span.content, "\"base_rifle\"");
-        assert_eq!(line[3].key_context, Some("copy-from".to_string()));
+        assert_eq!(line[3].key_context, Some(Rc::from("copy-from")));
     }
 
     #[test]
@@ -1147,7 +1147,7 @@ mod tests {
         let line = &annotated[0];
         assert_eq!(line[3].kind, JsonSpanKind::BooleanValue);
         assert_eq!(line[3].span.content, "true");
-        assert_eq!(line[3].key_context, Some("active".to_string()));
+        assert_eq!(line[3].key_context, Some(Rc::from("active")));
     }
 
     #[test]
@@ -1163,7 +1163,7 @@ mod tests {
 
         assert_eq!(inner_key.kind, JsonSpanKind::Key);
         assert_eq!(one_value.kind, JsonSpanKind::NumberValue);
-        assert_eq!(one_value.key_context, Some("inner".to_string()));
+        assert_eq!(one_value.key_context, Some(Rc::from("inner")));
     }
 
     #[test]
@@ -1177,9 +1177,9 @@ mod tests {
         let val_b = line.iter().find(|s| s.span.content == "\"b\"").unwrap();
 
         assert_eq!(val_a.kind, JsonSpanKind::StringValue);
-        assert_eq!(val_a.key_context, Some("tags".to_string()));
+        assert_eq!(val_a.key_context, Some(Rc::from("tags")));
         assert_eq!(val_b.kind, JsonSpanKind::StringValue);
-        assert_eq!(val_b.key_context, Some("tags".to_string()));
+        assert_eq!(val_b.key_context, Some(Rc::from("tags")));
     }
 
     #[test]
@@ -1238,7 +1238,7 @@ mod tests {
         let val_1 = val_1.unwrap();
         let val_x = val_x.unwrap();
 
-        assert_eq!(val_1.key_context, Some("id".to_string()));
-        assert_eq!(val_x.key_context, Some("arr".to_string()));
+        assert_eq!(val_1.key_context, Some(Rc::from("id")));
+        assert_eq!(val_x.key_context, Some(Rc::from("arr")));
     }
 }

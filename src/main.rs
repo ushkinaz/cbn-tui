@@ -11,7 +11,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Terminal, backend::CrosstermBackend, text::Text, widgets::ListState};
+use ratatui::{Terminal, backend::CrosstermBackend, widgets::ListState};
 use serde_json::Value;
 use std::fs;
 use std::io;
@@ -123,15 +123,14 @@ pub struct AppState {
     /// Time taken to build the index
     pub index_time_ms: f64,
     /// Scroll state for details pane
-    pub details_scroll_state: ScrollViewState,
-    /// Cached highlighted JSON text for the current selection
-    pub details_text: Text<'static>,
-    /// Number of lines in the current details_text
-    pub details_line_count: usize,
-    /// Annotated spans for the current details view (parallel to details_text)
+    /// State for scrolling the details pane
+    pub details_scroll_state: tui_scrollview::ScrollViewState,
+    /// Annotated spans for the current details view
     pub details_annotated: Vec<Vec<crate::ui::AnnotatedSpan>>,
     /// Pre-wrapped annotated spans for the current content_width (used for rendering and hit-testing)
     pub details_wrapped_annotated: Vec<Vec<crate::ui::AnnotatedSpan>>,
+    /// Cached Text object for the current details_wrapped_annotated
+    pub details_wrapped_text: ratatui::text::Text<'static>,
     /// Width used for current details_wrapped_annotated
     pub details_wrapped_width: u16,
     /// Screen region of the JSON content area (set during render)
@@ -202,10 +201,9 @@ impl AppState {
             total_items,
             index_time_ms,
             details_scroll_state: ScrollViewState::default(),
-            details_text: Text::default(),
-            details_line_count: 0,
             details_annotated: Vec::new(),
             details_wrapped_annotated: Vec::new(),
+            details_wrapped_text: ratatui::text::Text::default(),
             details_wrapped_width: 0,
             details_content_area: None,
             should_quit: false,
@@ -249,25 +247,19 @@ impl AppState {
         if let Some((json, _, _)) = self.get_selected_item() {
             match serde_json::to_string_pretty(json) {
                 Ok(json_str) => {
-                    let annotated = ui::highlight_json_annotated(&json_str, &self.theme.json_style);
-                    self.details_text = ui::annotated_to_text(annotated.clone());
-                    self.details_annotated = annotated;
-                    self.details_line_count = self.details_text.lines.len();
+                    self.details_annotated = ui::highlight_json_annotated(&json_str, &self.theme.json_style);
                 }
                 Err(_) => {
-                    self.details_text = Text::from("Error formatting JSON");
                     self.details_annotated = Vec::new();
-                    self.details_line_count = 1;
                 }
             }
         } else {
-            self.details_text = Text::from("Select an item to view details");
             self.details_annotated = Vec::new();
-            self.details_line_count = 1;
         }
         self.details_scroll_state = ScrollViewState::default();
         self.details_wrapped_width = 0;
         self.details_wrapped_annotated.clear();
+        self.details_wrapped_text = ratatui::text::Text::default();
     }
 
     /// Clamps the current list selection to valid bounds.
@@ -1333,7 +1325,6 @@ mod tests {
 
         app.refresh_details();
         assert!(!app.details_annotated.is_empty());
-        assert_eq!(app.details_annotated.len(), app.details_text.lines.len());
 
         // Check content structure - "id" should be present in some line metadata
         let found_id = app
