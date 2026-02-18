@@ -247,7 +247,8 @@ impl AppState {
         if let Some((json, _, _)) = self.get_selected_item() {
             match serde_json::to_string_pretty(json) {
                 Ok(json_str) => {
-                    self.details_annotated = ui::highlight_json_annotated(&json_str, &self.theme.json_style);
+                    self.details_annotated =
+                        ui::highlight_json_annotated(&json_str, &self.theme.json_style);
                 }
                 Err(_) => {
                     self.details_annotated = Vec::new();

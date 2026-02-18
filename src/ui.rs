@@ -166,28 +166,29 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
         if content_width > 0 && content_area.height > 0 {
             app.details_content_area = Some(content_area);
 
-                        // Re-wrap if width changed
-                        if app.details_wrapped_width != content_width {
-                            app.details_wrapped_annotated = wrap_annotated_lines(&app.details_annotated, content_width);
-                            app.details_wrapped_text = annotated_to_text(app.details_wrapped_annotated.clone());
-                            app.details_wrapped_width = content_width;
-                        }
-            
-                        let content_height = app.details_wrapped_annotated.len() as u16;
-            
-                        let mut scroll_view = ScrollView::new(Size::new(content_width, content_height))
-                            .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
-                            .horizontal_scrollbar_visibility(ScrollbarVisibility::Never);
-            
-                        // Match the background of the scroll view buffer to the theme
-                        let scroll_area = scroll_view.area();
-                        scroll_view.buf_mut().set_style(scroll_area, app.theme.text);
-            
-                        let content_rect = Rect::new(0, 0, content_width, content_height);
-                        scroll_view.render_widget(
-                            Paragraph::new(app.details_wrapped_text.clone()).style(app.theme.text),
-                            content_rect,
-                        );
+            // Re-wrap if width changed
+            if app.details_wrapped_width != content_width {
+                app.details_wrapped_annotated =
+                    wrap_annotated_lines(&app.details_annotated, content_width);
+                app.details_wrapped_text = annotated_to_text(app.details_wrapped_annotated.clone());
+                app.details_wrapped_width = content_width;
+            }
+
+            let content_height = app.details_wrapped_annotated.len() as u16;
+
+            let mut scroll_view = ScrollView::new(Size::new(content_width, content_height))
+                .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
+                .horizontal_scrollbar_visibility(ScrollbarVisibility::Never);
+
+            // Match the background of the scroll view buffer to the theme
+            let scroll_area = scroll_view.area();
+            scroll_view.buf_mut().set_style(scroll_area, app.theme.text);
+
+            let content_rect = Rect::new(0, 0, content_width, content_height);
+            scroll_view.render_widget(
+                Paragraph::new(app.details_wrapped_text.clone()).style(app.theme.text),
+                content_rect,
+            );
 
             // Render ScrollView centered horizontally within content_area using the padding
             let scroll_view_area = Rect::new(
@@ -1240,5 +1241,77 @@ mod tests {
 
         assert_eq!(val_1.key_context, Some(Rc::from("id")));
         assert_eq!(val_x.key_context, Some(Rc::from("arr")));
+    }
+
+    #[test]
+    fn test_hit_test_outside_area_returns_none() {
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(r#"{"id": 1}"#, &style);
+        let wrapped = wrap_annotated_lines(&annotated, 80);
+
+        let mut app = create_test_app();
+        app.details_wrapped_annotated = wrapped;
+        app.details_content_area = Some(Rect::new(10, 10, 40, 10));
+
+        // Outside area (above)
+        assert!(hit_test_details(&app, 15, 5).is_none());
+        // Outside area (left)
+        assert!(hit_test_details(&app, 5, 15).is_none());
+        // In gutter (horizontal padding = 1)
+        assert!(hit_test_details(&app, 10, 15).is_none());
+    }
+
+    #[test]
+    fn test_hit_test_on_key_span() {
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(r#""id": 1"#, &style);
+        let wrapped = wrap_annotated_lines(&annotated, 80);
+
+        let mut app = create_test_app();
+        app.details_wrapped_annotated = wrapped;
+        app.details_content_area = Some(Rect::new(0, 0, 80, 20));
+
+        // Click on "id" (starts at x=1 because of horizontal padding)
+        let span = hit_test_details(&app, 2, 0).unwrap();
+        assert_eq!(span.kind, JsonSpanKind::Key);
+        assert_eq!(span.span.content, "\"id\"");
+    }
+
+    #[test]
+    fn test_hit_test_on_value_span() {
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(r#""id": 1"#, &style);
+        let wrapped = wrap_annotated_lines(&annotated, 80);
+
+        let mut app = create_test_app();
+        app.details_wrapped_annotated = wrapped;
+        app.details_content_area = Some(Rect::new(0, 0, 80, 20));
+
+        // Click on "1"
+        // "id": 1 is 4+2+1+1 = 8 chars
+        // "i" is at x=2, "d" at x=3, ":" at x=5, " " at x=6, "1" at x=7
+        let span = hit_test_details(&app, 7, 0).unwrap();
+        assert_eq!(span.kind, JsonSpanKind::NumberValue);
+        assert_eq!(span.span.content, "1");
+        assert_eq!(span.key_context, Some(Rc::from("id")));
+    }
+
+    fn create_test_app() -> crate::AppState {
+        use serde_json::json;
+        let indexed_items = vec![(json!({"id": "1"}), "1".to_string(), "t".to_string())];
+        let search_index = crate::search_index::SearchIndex::build(&indexed_items);
+        let theme = crate::theme::Theme::Dracula.config();
+        crate::AppState::new(
+            indexed_items,
+            search_index,
+            theme,
+            "v1".to_string(),
+            "v1".to_string(),
+            "v1".to_string(),
+            false,
+            1,
+            0.0,
+            std::path::PathBuf::from("/tmp/history.txt"),
+        )
     }
 }
