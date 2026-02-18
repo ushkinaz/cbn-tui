@@ -5,7 +5,9 @@
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -518,7 +520,7 @@ where
 
         match event::read()? {
             Event::Key(key) => {
-                handle_key_event(app, key.code, key.modifiers);
+                handle_key_event(app, key.code, key.modifiers, key.kind);
                 if let Some(action) = app.pending_action.take() {
                     handle_action(terminal, app, action)?;
                 }
@@ -533,10 +535,19 @@ where
     Ok(())
 }
 
-fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) {
+fn handle_key_event(
+    app: &mut AppState,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    kind: KeyEventKind,
+) {
     fn apply_filter_edit(app: &mut AppState, edit: impl FnOnce(&mut AppState)) {
         edit(app);
         app.update_filter();
+    }
+
+    if matches!(kind, KeyEventKind::Release) {
+        return;
     }
 
     if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('g') {
@@ -1065,9 +1076,19 @@ mod tests {
         );
 
         assert_eq!(app.list_state.selected(), Some(0));
-        handle_key_event(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        handle_key_event(
+            &mut app,
+            KeyCode::Down,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.list_state.selected(), Some(1));
-        handle_key_event(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        handle_key_event(
+            &mut app,
+            KeyCode::Up,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.list_state.selected(), Some(0));
     }
 
@@ -1101,14 +1122,29 @@ mod tests {
             std::path::PathBuf::from("/tmp/history.txt"),
         );
 
-        handle_key_event(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+        handle_key_event(
+            &mut app,
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.input_mode, InputMode::Filtering);
 
-        handle_key_event(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        handle_key_event(
+            &mut app,
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.filter_text, "a");
         assert_eq!(app.filtered_indices.len(), 2);
 
-        handle_key_event(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
+        handle_key_event(
+            &mut app,
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.filter_text, "ap");
         assert_eq!(app.filtered_indices.len(), 1);
         assert_eq!(app.filtered_indices[0], 0);
@@ -1133,7 +1169,12 @@ mod tests {
             std::path::PathBuf::from("/tmp/history.txt"),
         );
 
-        handle_key_event(&mut app, KeyCode::Char('t'), KeyModifiers::NONE);
+        handle_key_event(
+            &mut app,
+            KeyCode::Char('t'),
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.input_mode, InputMode::Filtering);
         assert_eq!(app.filter_text, "t");
     }
@@ -1163,16 +1204,60 @@ mod tests {
 
         app.input_mode = InputMode::Filtering;
         app.filter_text = "test_query".to_string();
-        handle_key_event(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        handle_key_event(
+            &mut app,
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
 
         assert_eq!(app.filter_history.len(), 1);
         assert_eq!(app.filter_history[0], "test_query");
 
         app.input_mode = InputMode::Filtering;
         app.filter_text = "".to_string();
-        handle_key_event(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        handle_key_event(
+            &mut app,
+            KeyCode::Up,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.filter_text, "test_query");
 
         let _ = fs::remove_file(&history_path);
+    }
+
+    #[test]
+    fn test_handle_key_event_ignores_release_kind() {
+        let indexed_items = vec![(
+            json!({"id": "apple"}),
+            "apple".to_string(),
+            "fruit".to_string(),
+        )];
+        let search_index = search_index::SearchIndex::build(&indexed_items);
+        let theme = theme::Theme::Dracula.config();
+
+        let mut app = AppState::new(
+            indexed_items,
+            search_index,
+            theme,
+            "v1".to_string(),
+            "v1".to_string(),
+            "v1".to_string(),
+            false,
+            1,
+            0.0,
+            std::path::PathBuf::from("/tmp/history.txt"),
+        );
+
+        handle_key_event(
+            &mut app,
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.filter_text.is_empty());
     }
 }
