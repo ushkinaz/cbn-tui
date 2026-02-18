@@ -267,6 +267,7 @@ impl AppState {
         }
         self.details_scroll_state = ScrollViewState::default();
         self.details_wrapped_width = 0;
+        self.details_wrapped_annotated.clear();
     }
 
     /// Clamps the current list selection to valid bounds.
@@ -732,12 +733,12 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
     if matches!(
         mouse.kind,
         event::MouseEventKind::Down(event::MouseButton::Left)
-    )
-        && ui::hit_test_details(app, mouse.column, mouse.row).is_some() {
-            // Mouse interaction foundation is working!
-            // Actual Cmd+Click logic will be added in Phase 2 & 3.
-            return true;
-        }
+    ) && ui::hit_test_details(app, mouse.column, mouse.row).is_some()
+    {
+        // Mouse interaction foundation is working!
+        // Actual Cmd+Click logic will be added in Phase 2 & 3.
+        return true;
+    }
 
     is_interaction
 }
@@ -1025,9 +1026,10 @@ fn build_version_entries(builds: Vec<data::BuildInfo>) -> Vec<VersionEntry> {
 
 fn progress_ratio(progress: data::DownloadProgress) -> f64 {
     if let Some(total) = progress.total
-        && total > 0 {
-            return progress.downloaded as f64 / total as f64;
-        }
+        && total > 0
+    {
+        return progress.downloaded as f64 / total as f64;
+    }
 
     let downloaded = progress.downloaded as f64;
     downloaded / (downloaded + 1_000_000.0)
@@ -1334,9 +1336,10 @@ mod tests {
         assert_eq!(app.details_annotated.len(), app.details_text.lines.len());
 
         // Check content structure - "id" should be present in some line metadata
-        let found_id = app.details_annotated.iter().any(|line| {
-            line.iter().any(|s| s.span.content == "\"id\"")
-        });
+        let found_id = app
+            .details_annotated
+            .iter()
+            .any(|line| line.iter().any(|s| s.span.content == "\"id\""));
         assert!(found_id);
     }
 }

@@ -18,12 +18,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// Semantic role of a span in the rendered JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsonSpanKind {
-    Key,           // e.g. "range"
-    StringValue,   // e.g. "base_furniture"
-    NumberValue,   // e.g. 60
-    BooleanValue,  // true / false / null
-    Punctuation,   // { } [ ] , :
-    Whitespace,    // indentation
+    Key,          // e.g. "range"
+    StringValue,  // e.g. "base_furniture"
+    NumberValue,  // e.g. 60
+    BooleanValue, // true / false / null
+    Punctuation,  // { } [ ] , :
+    Whitespace,   // indentation
 }
 
 #[derive(Debug, Clone)]
@@ -167,7 +167,8 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
 
             // Re-wrap if width changed
             if app.details_wrapped_width != content_width {
-                app.details_wrapped_annotated = wrap_annotated_lines(&app.details_annotated, content_width);
+                app.details_wrapped_annotated =
+                    wrap_annotated_lines(&app.details_annotated, content_width);
                 app.details_wrapped_width = content_width;
             }
 
@@ -182,9 +183,17 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
             scroll_view.buf_mut().set_style(scroll_area, app.theme.text);
 
             let content_rect = Rect::new(0, 0, content_width, content_height);
-            let wrapped_text = annotated_to_text(app.details_wrapped_annotated.clone());
+            // Build temporary Text with borrowed spans to avoid cloning all strings every frame
+            let lines = app.details_wrapped_annotated.iter().map(|line_spans| {
+                Line::from(
+                    line_spans
+                        .iter()
+                        .map(|as_| Span::styled(as_.span.content.as_ref(), as_.span.style))
+                        .collect::<Vec<_>>(),
+                )
+            });
             scroll_view.render_widget(
-                Paragraph::new(wrapped_text).style(app.theme.text),
+                Paragraph::new(Text::from_iter(lines)).style(app.theme.text),
                 content_rect,
             );
 
@@ -725,10 +734,7 @@ pub fn annotated_to_text(annotated: Vec<Vec<AnnotatedSpan>>) -> Text<'static> {
 
 /// Wraps a matrix of AnnotatedSpans into lines that fit within the given width.
 /// Performs simple character-level wrapping.
-pub fn wrap_annotated_lines(
-    lines: &[Vec<AnnotatedSpan>],
-    width: u16,
-) -> Vec<Vec<AnnotatedSpan>> {
+pub fn wrap_annotated_lines(lines: &[Vec<AnnotatedSpan>], width: u16) -> Vec<Vec<AnnotatedSpan>> {
     let mut wrapped = Vec::new();
     let width = width as usize;
     if width == 0 {
@@ -787,7 +793,10 @@ pub fn wrap_annotated_lines(
                         let first_char = content.chars().next().unwrap();
                         let first_len = first_char.len_utf8();
                         current_wrapped_line.push(AnnotatedSpan {
-                            span: Span::styled(content[..first_len].to_string(), annotated.span.style),
+                            span: Span::styled(
+                                content[..first_len].to_string(),
+                                annotated.span.style,
+                            ),
                             kind: annotated.kind,
                             key_context: annotated.key_context.clone(),
                         });
@@ -799,7 +808,9 @@ pub fn wrap_annotated_lines(
                 }
             }
         }
-        wrapped.push(current_wrapped_line);
+        if !current_wrapped_line.is_empty() {
+            wrapped.push(current_wrapped_line);
+        }
     }
     wrapped
 }
@@ -811,9 +822,7 @@ struct JsonParserState {
 
 impl JsonParserState {
     fn new() -> Self {
-        Self {
-            stack: vec![None],
-        }
+        Self { stack: vec![None] }
     }
 
     fn current_key(&self) -> Option<String> {
@@ -1004,7 +1013,13 @@ fn process_non_quoted(
                 Span::styled(token.to_string(), Style::default().fg(json_style.number)),
                 JsonSpanKind::NumberValue,
             )
-        } else if token == ":" || token == "," || token == "{" || token == "}" || token == "[" || token == "]" {
+        } else if token == ":"
+            || token == ","
+            || token == "{"
+            || token == "}"
+            || token == "["
+            || token == "]"
+        {
             if token == "{" {
                 state.push_object();
             } else if token == "[" {
@@ -1042,13 +1057,18 @@ pub fn hit_test_details(app: &AppState, column: u16, row: u16) -> Option<&Annota
     // Strictly check bounds, excluding the horizontal gutters
     let content_x_start = area.x + horizontal_padding;
     let content_x_end = area.x + area.width - horizontal_padding;
-    if column < content_x_start || column >= content_x_end || row < area.y || row >= area.y + area.height {
+    if column < content_x_start
+        || column >= content_x_end
+        || row < area.y
+        || row >= area.y + area.height
+    {
         return None;
     }
 
     // Translate screen global coordinates to details content area relative coordinates
-    let rel_x = column - content_x_start;
-    let rel_y = row - area.y;
+    let rel_x = column.saturating_sub(content_x_start);
+    // Ensure rel_y is within [0, area.height) relative to the content area
+    let rel_y = row.saturating_sub(area.y);
 
     // Account for scroll offset
     let scroll_offset = app.details_scroll_state.offset();
@@ -1188,7 +1208,10 @@ mod tests {
         let annotated = highlight_json_annotated(json_str, &style);
 
         let line = &annotated[0];
-        let val = line.iter().find(|s| s.kind == JsonSpanKind::StringValue && s.span.content.contains("hello")).unwrap();
+        let val = line
+            .iter()
+            .find(|s| s.kind == JsonSpanKind::StringValue && s.span.content.contains("hello"))
+            .unwrap();
         assert_eq!(val.span.content, "\"he said \\\"hello\\\"\"");
     }
 
