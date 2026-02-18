@@ -1024,7 +1024,8 @@ mod tests {
     fn test_highlight_json() {
         let json_str = r#"{"id": "test", "val": 123, "active": true}"#;
         let style = theme::Theme::Dracula.config().json_style;
-        let highlighted = ui::highlight_json(json_str, &style);
+        let annotated = ui::highlight_json_annotated(json_str, &style);
+        let highlighted = ui::annotated_to_text(annotated);
 
         let mut found_id = false;
         let mut found_val = false;

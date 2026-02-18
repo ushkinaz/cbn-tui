@@ -717,11 +717,6 @@ fn name_value(value: &Value) -> Option<String> {
 
 /// Applies syntax highlighting to JSON text using theme-consistent colors.
 /// Returns a Text object for ratatui rendering.
-pub fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
-    let annotated = highlight_json_annotated(json, json_style);
-    annotated_to_text(annotated)
-}
-
 /// Converts a matrix of AnnotatedSpans into a ratatui Text object.
 pub fn annotated_to_text(annotated: Vec<Vec<AnnotatedSpan>>) -> Text<'static> {
     Text::from(
@@ -732,13 +727,51 @@ pub fn annotated_to_text(annotated: Vec<Vec<AnnotatedSpan>>) -> Text<'static> {
     )
 }
 
+#[derive(Debug, Default)]
+struct JsonParserState {
+    stack: Vec<Option<String>>,
+}
+
+impl JsonParserState {
+    fn new() -> Self {
+        Self {
+            stack: vec![None],
+        }
+    }
+
+    fn current_key(&self) -> Option<String> {
+        self.stack.last().cloned().flatten()
+    }
+
+    fn update_key(&mut self, key: String) {
+        if let Some(top) = self.stack.last_mut() {
+            *top = Some(key);
+        }
+    }
+
+    fn push_object(&mut self) {
+        self.stack.push(None);
+    }
+
+    fn push_array(&mut self) {
+        let current = self.current_key();
+        self.stack.push(current);
+    }
+
+    fn pop(&mut self) {
+        if self.stack.len() > 1 {
+            self.stack.pop();
+        }
+    }
+}
+
 /// Refactored version of highlight_json that also returns semantic metadata for each span.
 pub fn highlight_json_annotated(
     json: &str,
     json_style: &theme::JsonStyle,
 ) -> Vec<Vec<AnnotatedSpan>> {
     let mut lines = Vec::new();
-    let mut current_key: Option<String> = None;
+    let mut state = JsonParserState::new();
 
     for line_str in json.lines() {
         let mut spans = Vec::new();
@@ -761,7 +794,7 @@ pub fn highlight_json_annotated(
                         spans.push(AnnotatedSpan {
                             span: Span::raw(prefix.to_string()),
                             kind: JsonSpanKind::StringValue,
-                            key_context: current_key.clone(),
+                            key_context: state.current_key(),
                         });
                     }
                     remaining = &remaining[pos + 1..];
@@ -771,7 +804,7 @@ pub fn highlight_json_annotated(
                 // Add prefix before quotes
                 let prefix = &remaining[..pos];
                 if !prefix.is_empty() {
-                    process_non_quoted(prefix, json_style, &mut spans, &current_key);
+                    process_non_quoted(prefix, json_style, &mut spans, &mut state);
                 }
 
                 let rest = &remaining[pos + 1..];
@@ -798,7 +831,7 @@ pub fn highlight_json_annotated(
                     let is_key = rest[ep + 1..].trim_start().starts_with(':');
 
                     if is_key {
-                        current_key = Some(quoted.to_string());
+                        state.update_key(quoted.to_string());
                         spans.push(AnnotatedSpan {
                             span: Span::styled(
                                 format!("\"{}\"", quoted),
@@ -807,7 +840,7 @@ pub fn highlight_json_annotated(
                                     .add_modifier(Modifier::BOLD),
                             ),
                             kind: JsonSpanKind::Key,
-                            key_context: current_key.clone(),
+                            key_context: state.current_key(),
                         });
                     } else {
                         spans.push(AnnotatedSpan {
@@ -816,7 +849,7 @@ pub fn highlight_json_annotated(
                                 Style::default().fg(json_style.string),
                             ),
                             kind: JsonSpanKind::StringValue,
-                            key_context: current_key.clone(),
+                            key_context: state.current_key(),
                         });
                     }
                     remaining = &rest[ep + 1..];
@@ -827,12 +860,12 @@ pub fn highlight_json_annotated(
                             Style::default().fg(json_style.string),
                         ),
                         kind: JsonSpanKind::StringValue,
-                        key_context: current_key.clone(),
+                        key_context: state.current_key(),
                     });
                     remaining = "";
                 }
             } else {
-                process_non_quoted(remaining, json_style, &mut spans, &current_key);
+                process_non_quoted(remaining, json_style, &mut spans, &mut state);
                 remaining = "";
             }
         }
@@ -846,7 +879,7 @@ fn process_non_quoted(
     content: &str,
     json_style: &theme::JsonStyle,
     spans: &mut Vec<AnnotatedSpan>,
-    key_context: &Option<String>,
+    state: &mut JsonParserState,
 ) {
     let mut remaining = content;
     while !remaining.is_empty() {
@@ -856,7 +889,7 @@ fn process_non_quoted(
             spans.push(AnnotatedSpan {
                 span: Span::raw(remaining[..start_offset].to_string()),
                 kind: JsonSpanKind::Whitespace,
-                key_context: key_context.clone(),
+                key_context: state.current_key(),
             });
         }
 
@@ -865,7 +898,15 @@ fn process_non_quoted(
         }
 
         let token_end = trimmed
-            .find(|c: char| c.is_whitespace() || c == ',' || c == '}' || c == ']' || c == ':')
+            .find(|c: char| {
+                c.is_whitespace()
+                    || c == ','
+                    || c == '}'
+                    || c == ']'
+                    || c == '{'
+                    || c == '['
+                    || c == ':'
+            })
             .map(|pos| if pos == 0 { 1 } else { pos })
             .unwrap_or(trimmed.len());
         let token = &trimmed[..token_end];
@@ -887,6 +928,13 @@ fn process_non_quoted(
                 JsonSpanKind::NumberValue,
             )
         } else if token == ":" || token == "," || token == "{" || token == "}" || token == "[" || token == "]" {
+            if token == "{" {
+                state.push_object();
+            } else if token == "[" {
+                state.push_array();
+            } else if token == "}" || token == "]" {
+                state.pop();
+            }
             (Span::raw(token.to_string()), JsonSpanKind::Punctuation)
         } else {
             (
@@ -902,7 +950,7 @@ fn process_non_quoted(
         spans.push(AnnotatedSpan {
             span: styled,
             kind,
-            key_context: key_context.clone(),
+            key_context: state.current_key(),
         });
         remaining = rest;
     }
@@ -1067,7 +1115,8 @@ mod tests {
     fn test_to_text_preserves_rendering() {
         let json_str = r#"{"id": "test", "num": 123}"#;
         let style = crate::theme::Theme::Dracula.config().json_style;
-        let text = highlight_json(json_str, &style);
+        let annotated = highlight_json_annotated(json_str, &style);
+        let text = annotated_to_text(annotated);
 
         // Verification: ensure it still has some styled spans
         let mut has_styles = false;
@@ -1090,5 +1139,32 @@ mod tests {
         let line = &annotated[0];
         let val = line.iter().find(|s| s.kind == JsonSpanKind::StringValue && s.span.content.contains("hello")).unwrap();
         assert_eq!(val.span.content, "\"he said \\\"hello\\\"\"");
+    }
+
+    #[test]
+    fn test_annotated_spans_nested_array_context() {
+        let json_str = r#"{ "arr": [{"id": 1}, "x"] }"#;
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(json_str, &style);
+
+        let mut val_1 = None;
+        let mut val_x = None;
+
+        for line in &annotated {
+            for span in line {
+                if span.span.content == "1" {
+                    val_1 = Some(span.clone());
+                }
+                if span.span.content == "\"x\"" {
+                    val_x = Some(span.clone());
+                }
+            }
+        }
+
+        let val_1 = val_1.unwrap();
+        let val_x = val_x.unwrap();
+
+        assert_eq!(val_1.key_context, Some("id".to_string()));
+        assert_eq!(val_x.key_context, Some("arr".to_string()));
     }
 }
