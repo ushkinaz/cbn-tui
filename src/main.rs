@@ -539,11 +539,13 @@ where
                 terminal.draw(|f| ui::ui(f, app))?;
             }
             Event::Mouse(mouse) => {
-                handle_mouse_event(app, mouse);
-                if let Some(action) = app.pending_action.take() {
-                    handle_action(terminal, app, action)?;
+                let transitioned = handle_mouse_event(app, mouse);
+                if transitioned || app.pending_action.is_some() {
+                    if let Some(action) = app.pending_action.take() {
+                        handle_action(terminal, app, action)?;
+                    }
+                    terminal.draw(|f| ui::ui(f, app))?;
                 }
-                terminal.draw(|f| ui::ui(f, app))?;
             }
             Event::Resize(_, _) => {
                 terminal.draw(|f| ui::ui(f, app))?;
@@ -711,16 +713,28 @@ fn handle_key_event(
     }
 }
 
-fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) {
+fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
+    // Only redraw on meaningful mouse state changes/interactions
+    let is_interaction = matches!(
+        mouse.kind,
+        event::MouseEventKind::Down(_)
+            | event::MouseEventKind::Up(_)
+            | event::MouseEventKind::Drag(_)
+            | event::MouseEventKind::ScrollDown
+            | event::MouseEventKind::ScrollUp
+    );
+
     if matches!(
         mouse.kind,
         event::MouseEventKind::Down(event::MouseButton::Left)
-    ) {
-        if let Some(_span) = ui::hit_test_details(app, mouse.column, mouse.row) {
+    )
+        && ui::hit_test_details(app, mouse.column, mouse.row).is_some() {
             // Mouse interaction foundation is working!
             // Actual Cmd+Click logic will be added in Phase 2 & 3.
+            return true;
         }
-    }
+
+    is_interaction
 }
 
 fn load_initial_data<B: ratatui::backend::Backend>(
@@ -1005,11 +1019,10 @@ fn build_version_entries(builds: Vec<data::BuildInfo>) -> Vec<VersionEntry> {
 }
 
 fn progress_ratio(progress: data::DownloadProgress) -> f64 {
-    if let Some(total) = progress.total {
-        if total > 0 {
+    if let Some(total) = progress.total
+        && total > 0 {
             return progress.downloaded as f64 / total as f64;
         }
-    }
 
     let downloaded = progress.downloaded as f64;
     downloaded / (downloaded + 1_000_000.0)
