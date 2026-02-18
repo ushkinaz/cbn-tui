@@ -768,8 +768,8 @@ mod tests {
     #[test]
     #[ignore]
     fn test_slow_search_performance() {
-        use std::time::Instant;
         use serde_json::json;
+        use std::time::Instant;
 
         // Generate 10,000 items with nested structure
         let mut items = Vec::new();
@@ -797,7 +797,7 @@ mod tests {
         // "description:zombie" will force a scan of all items checking the "description" field.
         // This exercises matches_field -> matches_value recursion.
         for _ in 0..100 {
-             let _ = slow_search_classifier(&items, "description", "zombie", false);
+            let _ = slow_search_classifier(&items, "description", "zombie", false);
         }
         let duration = start.elapsed();
         println!("Performance test time: {:?}", duration);

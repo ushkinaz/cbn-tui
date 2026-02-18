@@ -510,10 +510,7 @@ fn render_progress_modal(f: &mut Frame, app: &mut AppState) {
     let area = f.area();
     let stages_len = app.progress_stages.len().max(1) as u16;
     let popup_width = area.width.min(68).saturating_sub(4);
-    let popup_height = area
-        .height
-        .saturating_sub(2)
-        .min(stages_len + 4);
+    let popup_height = area.height.saturating_sub(2).min(stages_len + 4);
     if popup_width == 0 || popup_height == 0 {
         return;
     }
@@ -552,15 +549,9 @@ fn render_progress_modal(f: &mut Frame, app: &mut AppState) {
     let labels: Vec<String> = app
         .progress_stages
         .iter()
-        .map(|stage| {
-            stage.label.clone()
-        })
+        .map(|stage| stage.label.clone())
         .collect();
-    let mut label_width = labels
-        .iter()
-        .map(|label| label.width())
-        .max()
-        .unwrap_or(0) as u16;
+    let mut label_width = labels.iter().map(|label| label.width()).max().unwrap_or(0) as u16;
     let min_gauge_width = 10u16;
     let percent_width = 4u16;
     if content_area.width <= min_gauge_width {
@@ -606,10 +597,7 @@ fn render_progress_modal(f: &mut Frame, app: &mut AppState) {
                 .get(idx)
                 .cloned()
                 .unwrap_or_else(|| "Working 0%".to_string());
-            f.render_widget(
-                Paragraph::new(label).style(app.theme.text),
-                row_chunks[0],
-            );
+            f.render_widget(Paragraph::new(label).style(app.theme.text), row_chunks[0]);
         }
 
         let gauge = LineGauge::default()
@@ -638,9 +626,10 @@ fn display_name_for_item(json: &Value, id: &str, type_: &str) -> String {
     }
 
     if let Some(name) = json.get("name").and_then(name_value)
-        && !name.is_empty() {
-            return name;
-        }
+        && !name.is_empty()
+    {
+        return name;
+    }
 
     if let Some(fallback) = fallback_display_name(json, id, type_) {
         return fallback;

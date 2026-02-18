@@ -198,10 +198,7 @@ fn download_to_path(
     let mut buffer = [0u8; 65536];
 
     if let Some(cb) = on_progress.as_deref_mut() {
-        cb(DownloadProgress {
-            downloaded,
-            total,
-        });
+        cb(DownloadProgress { downloaded, total });
     }
 
     loop {
@@ -212,10 +209,7 @@ fn download_to_path(
         file.write_all(&buffer[..read])?;
         downloaded += read as u64;
         if let Some(cb) = on_progress.as_deref_mut() {
-            cb(DownloadProgress {
-                downloaded,
-                total,
-            });
+            cb(DownloadProgress { downloaded, total });
         }
     }
 

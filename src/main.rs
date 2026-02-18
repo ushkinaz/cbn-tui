@@ -259,9 +259,10 @@ impl AppState {
         }
 
         if let Some(selected) = self.list_state.selected()
-            && selected >= len {
-                self.list_state.select(Some(len - 1));
-            }
+            && selected >= len
+        {
+            self.list_state.select(Some(len - 1));
+        }
     }
 
     /// Moves selection by `direction` (+1 or -1) and refreshes details.
@@ -313,9 +314,10 @@ impl AppState {
     fn filter_delete(&mut self) {
         let char_count = self.filter_text.chars().count();
         if self.filter_cursor < char_count
-            && let Some((byte_idx, _)) = self.filter_text.char_indices().nth(self.filter_cursor) {
-                self.filter_text.remove(byte_idx);
-            }
+            && let Some((byte_idx, _)) = self.filter_text.char_indices().nth(self.filter_cursor)
+        {
+            self.filter_text.remove(byte_idx);
+        }
     }
 
     fn filter_move_cursor_left(&mut self) {
@@ -562,8 +564,7 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
                 if let Some(idx) = app.version_list_state.selected()
                     && let Some(entry) = app.version_entries.get(idx)
                 {
-                    app.pending_action =
-                        Some(AppAction::SwitchVersion(entry.version.clone()));
+                    app.pending_action = Some(AppAction::SwitchVersion(entry.version.clone()));
                 }
             }
             _ => {}
@@ -615,10 +616,11 @@ fn handle_key_event(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) 
         InputMode::Filtering => match code {
             KeyCode::Enter => {
                 if !app.filter_text.trim().is_empty()
-                    && app.filter_history.last() != Some(&app.filter_text) {
-                        app.filter_history.push(app.filter_text.clone());
-                        app.save_history();
-                    }
+                    && app.filter_history.last() != Some(&app.filter_text)
+                {
+                    app.filter_history.push(app.filter_text.clone());
+                    app.save_history();
+                }
                 app.history_index = None;
                 app.input_mode = InputMode::Normal;
             }
@@ -687,13 +689,7 @@ fn load_initial_data<B: ratatui::backend::Backend>(
 where
     B::Error: Send + Sync + 'static,
 {
-    load_game_data_with_ui(
-        terminal,
-        app,
-        args.file.as_deref(),
-        &args.game,
-        args.force,
-    )
+    load_game_data_with_ui(terminal, app, args.file.as_deref(), &args.game, args.force)
 }
 
 fn handle_action<B: ratatui::backend::Backend>(
@@ -713,13 +709,12 @@ where
                 .iter()
                 .position(|entry| entry.version == app.game_version_key)
                 .unwrap_or(0);
-            app.version_list_state.select(
-                if app.version_entries.is_empty() {
+            app.version_list_state
+                .select(if app.version_entries.is_empty() {
                     None
                 } else {
                     Some(selected)
-                },
-            );
+                });
             app.show_version_picker = true;
         }
         AppAction::SwitchVersion(version) => {
@@ -898,9 +893,8 @@ where
 
     let mut draw_error: Option<anyhow::Error> = None;
     let mut last_ratio = -1.0;
-    let search_index = search_index::SearchIndex::build_with_progress(
-        &indexed_items,
-        |processed, total_items| {
+    let search_index =
+        search_index::SearchIndex::build_with_progress(&indexed_items, |processed, total_items| {
             let ratio = if total_items > 0 {
                 0.4 + 0.6 * (processed as f64 / total_items as f64)
             } else {
@@ -918,8 +912,7 @@ where
                     last_ratio = ratio;
                 }
             }
-        },
-    );
+        });
 
     if let Some(err) = draw_error {
         return Err(err);
