@@ -128,6 +128,10 @@ pub struct AppState {
     pub details_text: Text<'static>,
     /// Number of lines in the current details_text
     pub details_line_count: usize,
+    /// Annotated spans for the current details view (parallel to details_text)
+    pub details_annotated: Vec<Vec<crate::ui::AnnotatedSpan>>,
+    /// Screen region of the JSON content area (set during render)
+    pub details_content_area: Option<ratatui::layout::Rect>,
     /// Flag to quit app
     pub should_quit: bool,
     /// Whether help overlay is visible
@@ -196,6 +200,8 @@ impl AppState {
             details_scroll_state: ScrollViewState::default(),
             details_text: Text::default(),
             details_line_count: 0,
+            details_annotated: Vec::new(),
+            details_content_area: None,
             should_quit: false,
             show_help: false,
             show_version_picker: false,
@@ -237,16 +243,22 @@ impl AppState {
         if let Some((json, _, _)) = self.get_selected_item() {
             match serde_json::to_string_pretty(json) {
                 Ok(json_str) => {
-                    self.details_text = ui::highlight_json(&json_str, &self.theme.json_style);
+                    self.details_annotated =
+                        ui::highlight_json_annotated(&json_str, &self.theme.json_style);
+                    self.details_text =
+                        ui::annotated_to_text(self.details_annotated.clone());
                     self.details_line_count = self.details_text.lines.len();
                 }
-                Err(_) => {
+                Err(e) => {
+                    eprintln!("Error formatting JSON: {}", e);
                     self.details_text = Text::from("Error formatting JSON");
+                    self.details_annotated = Vec::new();
                     self.details_line_count = 1;
                 }
             }
         } else {
             self.details_text = Text::from("Select an item to view details");
+            self.details_annotated = Vec::new();
             self.details_line_count = 1;
         }
         self.details_scroll_state = ScrollViewState::default();
@@ -526,6 +538,13 @@ where
                 }
                 terminal.draw(|f| ui::ui(f, app))?;
             }
+            Event::Mouse(mouse) => {
+                handle_mouse_event(app, mouse);
+                if let Some(action) = app.pending_action.take() {
+                    handle_action(terminal, app, action)?;
+                }
+                terminal.draw(|f| ui::ui(f, app))?;
+            }
             Event::Resize(_, _) => {
                 terminal.draw(|f| ui::ui(f, app))?;
             }
@@ -689,6 +708,18 @@ fn handle_key_event(
             KeyCode::End => app.filter_move_to_end(),
             _ => {}
         },
+    }
+}
+
+fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) {
+    if matches!(
+        mouse.kind,
+        event::MouseEventKind::Down(event::MouseButton::Left)
+    ) {
+        if let Some(_span) = ui::hit_test_details(app, mouse.column, mouse.row) {
+            // Mouse interaction foundation is working!
+            // Actual Cmd+Click logic will be added in Phase 2 & 3.
+        }
     }
 }
 
@@ -1259,5 +1290,34 @@ mod tests {
 
         assert_eq!(app.input_mode, InputMode::Normal);
         assert!(app.filter_text.is_empty());
+    }
+
+    #[test]
+    fn test_refresh_details_populates_annotated() {
+        let indexed_items = vec![(json!({"id": "1"}), "1".to_string(), "t".to_string())];
+        let search_index = search_index::SearchIndex::build(&indexed_items);
+        let theme = theme::Theme::Dracula.config();
+        let mut app = AppState::new(
+            indexed_items,
+            search_index,
+            theme,
+            "v1".to_string(),
+            "v1".to_string(),
+            "v1".to_string(),
+            false,
+            1,
+            0.0,
+            std::path::PathBuf::from("/tmp/history.txt"),
+        );
+
+        app.refresh_details();
+        assert!(!app.details_annotated.is_empty());
+        assert_eq!(app.details_annotated.len(), app.details_text.lines.len());
+
+        // Check content structure - "id" should be present in some line metadata
+        let found_id = app.details_annotated.iter().any(|line| {
+            line.iter().any(|s| s.span.content == "\"id\"")
+        });
+        assert!(found_id);
     }
 }
