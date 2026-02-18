@@ -912,15 +912,23 @@ fn process_non_quoted(
 /// Returns None if the click is outside the details pane.
 pub fn hit_test_details(app: &AppState, column: u16, row: u16) -> Option<&AnnotatedSpan> {
     let area = app.details_content_area?;
-    if !area.contains(ratatui::layout::Position { x: column, y: row }) {
+    let horizontal_padding = 1;
+    let content_width = area.width.saturating_sub(horizontal_padding * 2);
+
+    if content_width == 0 {
+        return None;
+    }
+
+    // Strictly check bounds, excluding the horizontal gutters
+    let content_x_start = area.x + horizontal_padding;
+    let content_x_end = content_x_start + content_width;
+    if column < content_x_start || column >= content_x_end || row < area.y || row >= area.y + area.height {
         return None;
     }
 
     // Translate screen global coordinates to details content area relative coordinates
-    // We subtract the content area origin and the 1-symbol horizontal padding
-    let horizontal_padding = 1;
-    let rel_x = column.saturating_sub(area.x + horizontal_padding);
-    let rel_y = row.saturating_sub(area.y);
+    let rel_x = column - content_x_start;
+    let rel_y = row - area.y;
 
     // Account for scroll offset
     let scroll_offset = app.details_scroll_state.offset();
@@ -928,12 +936,6 @@ pub fn hit_test_details(app: &AppState, column: u16, row: u16) -> Option<&Annota
     // Note: horizontal scroll is disabled in render_details (ScrollbarVisibility::Never)
 
     // Details pane uses wrapping. We need to find which original line AND which wrap-line was clicked.
-    let horizontal_padding = 1;
-    let content_width = area.width.saturating_sub(horizontal_padding * 2);
-    if content_width == 0 {
-        return None;
-    }
-
     let mut current_wrapped_row = 0;
     for line_spans in &app.details_annotated {
         let line_width = line_spans
