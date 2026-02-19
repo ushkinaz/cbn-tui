@@ -251,11 +251,19 @@ impl AppState {
                         ui::highlight_json_annotated(&json_str, &self.theme.json_style);
                 }
                 Err(_) => {
-                    self.details_annotated = Vec::new();
+                    self.details_annotated = vec![vec![crate::ui::AnnotatedSpan {
+                        span: ratatui::text::Span::raw("Error formatting JSON"),
+                        kind: crate::ui::JsonSpanKind::Whitespace,
+                        key_context: None,
+                    }]];
                 }
             }
         } else {
-            self.details_annotated = Vec::new();
+            self.details_annotated = vec![vec![crate::ui::AnnotatedSpan {
+                span: ratatui::text::Span::raw("Select an item to view details"),
+                kind: crate::ui::JsonSpanKind::Whitespace,
+                key_context: None,
+            }]];
         }
         self.details_scroll_state = ScrollViewState::default();
         self.details_wrapped_width = 0;
