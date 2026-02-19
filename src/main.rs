@@ -721,16 +721,6 @@ fn handle_key_event(
 }
 
 fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
-    // Only redraw on meaningful mouse state changes/interactions
-    let is_interaction = matches!(
-        mouse.kind,
-        event::MouseEventKind::Down(_)
-            | event::MouseEventKind::Up(_)
-            | event::MouseEventKind::Drag(_)
-            | event::MouseEventKind::ScrollDown
-            | event::MouseEventKind::ScrollUp
-    );
-
     if matches!(
         mouse.kind,
         event::MouseEventKind::Down(event::MouseButton::Left)
@@ -741,7 +731,7 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
         return true;
     }
 
-    is_interaction
+    false
 }
 
 fn load_initial_data<B: ratatui::backend::Backend>(
