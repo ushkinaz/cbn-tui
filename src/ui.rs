@@ -903,7 +903,12 @@ pub fn wrap_annotated_lines(lines: &[Vec<AnnotatedSpan>], width: u16) -> Vec<Vec
 
 #[derive(Debug, Default)]
 struct JsonParserState {
-    stack: Vec<Option<Rc<str>>>,
+    /// Each level holds the current key name at that nesting depth (None for array slots).
+    stack: Vec<Option<String>>,
+    /// Eagerly-maintained dot-joined path cached as an Rc<str>.
+    /// current_key() just clones this — O(1) with no heap allocation.
+    /// Rebuilt (O(depth)) only on push/pop/update_key, which are rare vs. per-span calls.
+    current_path_rc: Option<Rc<str>>,
     next_span_id: usize,
 }
 
@@ -911,6 +916,7 @@ impl JsonParserState {
     fn new() -> Self {
         Self {
             stack: vec![None],
+            current_path_rc: None,
             next_span_id: 1,
         }
     }
@@ -921,28 +927,40 @@ impl JsonParserState {
         id
     }
 
+    /// Returns the cached context path. Cheap Rc clone — no allocation.
     fn current_key(&self) -> Option<Rc<str>> {
-        let parts: Vec<&str> = self
-            .stack
-            .iter()
-            .filter_map(|k| k.as_deref())
-            .filter(|k| !k.is_empty())
-            .collect();
-        if parts.is_empty() {
+        self.current_path_rc.clone()
+    }
+
+    /// Rebuilds current_path_rc from the stack. Called only on structural changes.
+    fn rebuild_path(&mut self) {
+        let mut path = String::new();
+        for entry in &self.stack {
+            if let Some(k) = entry {
+                if !k.is_empty() {
+                    if !path.is_empty() {
+                        path.push('.');
+                    }
+                    path.push_str(k);
+                }
+            }
+        }
+        self.current_path_rc = if path.is_empty() {
             None
         } else {
-            Some(Rc::from(parts.join(".").as_str()))
-        }
+            Some(Rc::from(path.as_str()))
+        };
     }
 
     fn update_key(&mut self, key: &str) {
         if let Some(top) = self.stack.last_mut() {
-            *top = Some(Rc::from(key));
+            *top = Some(key.to_string());
         }
+        self.rebuild_path();
     }
 
     fn push_object(&mut self) {
-        self.stack.push(None); // new object structure
+        self.stack.push(None); // new object level; key will be set by update_key
     }
 
     fn push_array(&mut self) {
@@ -952,6 +970,7 @@ impl JsonParserState {
     fn pop(&mut self) {
         if self.stack.len() > 1 {
             self.stack.pop();
+            self.rebuild_path();
         }
     }
 }
