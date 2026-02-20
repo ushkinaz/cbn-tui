@@ -277,6 +277,9 @@ fn render_filter(f: &mut Frame, app: &mut AppState, area: Rect) {
         .title_style(app.theme.title);
 
     let inner = block.inner(area);
+    let horizontal_scroll =
+        filter_viewport_offset(&app.filter_text, app.filter_cursor, inner.width);
+
     let content = if app.filter_text.is_empty() && app.input_mode != InputMode::Filtering {
         Text::from(Line::from(Span::styled(
             "t:gun ammo:rpg",
@@ -286,14 +289,18 @@ fn render_filter(f: &mut Frame, app: &mut AppState, area: Rect) {
         Text::from(app.filter_text.as_str())
     };
 
-    let paragraph = Paragraph::new(content).block(block).style(app.theme.text);
+    let paragraph = Paragraph::new(content)
+        .block(block)
+        .style(app.theme.text)
+        .scroll((0, horizontal_scroll));
 
     f.render_widget(paragraph, area);
 
     if app.input_mode == InputMode::Filtering && inner.width > 0 && inner.height > 0 {
         let cursor_offset = filter_cursor_offset(&app.filter_text, app.filter_cursor);
         let max_x = inner.width.saturating_sub(1);
-        let cursor_x = inner.x + cursor_offset.min(max_x);
+        let visible_cursor_offset = cursor_offset.saturating_sub(horizontal_scroll);
+        let cursor_x = inner.x + visible_cursor_offset.min(max_x);
         let cursor_y = inner.y;
         f.set_cursor_position((cursor_x, cursor_y));
     }
@@ -1100,6 +1107,16 @@ pub fn filter_cursor_offset(text: &str, cursor: usize) -> u16 {
         .sum::<u16>()
 }
 
+/// Calculates horizontal viewport offset so the cursor stays visible in the input.
+fn filter_viewport_offset(text: &str, cursor: usize, visible_width: u16) -> u16 {
+    if visible_width == 0 {
+        return 0;
+    }
+
+    let cursor_offset = filter_cursor_offset(text, cursor);
+    cursor_offset.saturating_sub(visible_width.saturating_sub(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1313,5 +1330,24 @@ mod tests {
             0.0,
             std::path::PathBuf::from("/tmp/history.txt"),
         )
+    }
+
+    #[test]
+    fn test_filter_viewport_offset_keeps_cursor_visible() {
+        let text = "abcdefghijklmnopqrstuvwxyz";
+
+        assert_eq!(filter_viewport_offset(text, 0, 10), 0);
+        assert_eq!(filter_viewport_offset(text, 9, 10), 0);
+        assert_eq!(filter_viewport_offset(text, 10, 10), 1);
+        assert_eq!(filter_viewport_offset(text, 15, 10), 6);
+    }
+
+    #[test]
+    fn test_filter_viewport_offset_handles_wide_characters() {
+        let text = "🦀rust";
+
+        assert_eq!(filter_viewport_offset(text, 1, 2), 1);
+        assert_eq!(filter_viewport_offset(text, 2, 3), 1);
+        assert_eq!(filter_viewport_offset(text, 5, 4), 3);
     }
 }
