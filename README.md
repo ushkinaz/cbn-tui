@@ -42,6 +42,7 @@ cbn-tui --game nightly
 - **List available game versions**: `cbn-tui --game-versions`
 - **Force refresh cached data**: `cbn-tui --game stable --force`
 - **Use a custom JSON file**: `cbn-tui --file path/to/your/data.json`
+- **Use a local source directory (In-source mode)**: `cbn-tui --source path/to/cdda-data/` (Hot reload with `Ctrl-R`)
 
 ## 📄 License
 Distributed under the MIT License. See `LICENSE` for more information.

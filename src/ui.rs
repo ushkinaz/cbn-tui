@@ -356,10 +356,21 @@ fn render_status_bar_shortcuts(f: &mut Frame, app: &mut AppState, area: Rect) {
 
 fn render_status_bar_operational(f: &mut Frame, app: &mut AppState, area: Rect) {
     let bar_style = app.theme.text.add_modifier(Modifier::DIM);
-    let status = Line::from(format!(
+    let mut spans = vec![Span::raw(format!(
         "Items: {} | Index: {:.2}ms",
         app.total_items, app.index_time_ms
-    ));
+    ))];
+    if !app.source_warnings.is_empty() {
+        spans.push(Span::raw(" |"));
+        spans.push(Span::styled(
+            " *",
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    let status = Line::from(spans);
 
     f.render_widget(
         Paragraph::new(status)
@@ -434,6 +445,7 @@ fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
         ("End", "selection to end"),
         ("PgUp | Ctrl+k", "scroll JSON up"),
         ("PgDown | Ctrl+j", "scroll JSON down"),
+        ("Ctrl+R", "reload local source"),
         ("Ctrl+G", "version switcher"),
         ("?", "this help"),
         ("Esc", "back / quit"),
@@ -1380,6 +1392,7 @@ mod tests {
             1,
             0.0,
             std::path::PathBuf::from("/tmp/history.txt"),
+            None,
         )
     }
 

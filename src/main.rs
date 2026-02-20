@@ -59,8 +59,13 @@ struct Args {
     config: bool,
 
     /// Clear the search history
+    /// Clear the search history
     #[arg(long)]
     clear_history: bool,
+
+    /// Local directory of JSON files to source data from
+    #[arg(short, long)]
+    source: Option<String>,
 }
 
 /// Current input mode for the application.
@@ -90,6 +95,7 @@ pub struct ProgressStage {
 enum AppAction {
     OpenVersionPicker,
     SwitchVersion(String),
+    ReloadSource,
 }
 
 /// Application state for the Ratatui app.
@@ -165,6 +171,10 @@ pub struct AppState {
     pub history_path: std::path::PathBuf,
     /// Pending action to execute after input handling
     pending_action: Option<AppAction>,
+    /// Source directory, if in --source mode
+    pub source_dir: Option<String>,
+    /// Warnings accumulated during source loading
+    pub source_warnings: Vec<String>,
 }
 
 impl AppState {
@@ -180,6 +190,7 @@ impl AppState {
         total_items: usize,
         index_time_ms: f64,
         history_path: std::path::PathBuf,
+        source_dir: Option<String>,
     ) -> Self {
         let filtered_indices: Vec<usize> = (0..indexed_items.len()).collect();
         let id_set = indexed_items
@@ -230,6 +241,8 @@ impl AppState {
             stashed_input: String::new(),
             history_path,
             pending_action: None,
+            source_dir,
+            source_warnings: Vec::new(),
         };
         app.load_history();
         app.refresh_details();
@@ -506,6 +519,16 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(source_dir) = &args.source {
+        let path = std::path::Path::new(source_dir);
+        if !path.exists() {
+            anyhow::bail!("Source directory does not exist: {}", source_dir);
+        }
+        if !path.is_dir() {
+            anyhow::bail!("Source path is not a directory: {}", source_dir);
+        }
+    }
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -517,13 +540,22 @@ fn main() -> Result<()> {
         Vec::new(),
         search_index::SearchIndex::new(),
         theme,
-        "loading".to_string(),
-        args.game.clone(),
+        if args.source.is_some() {
+            "local".to_string()
+        } else {
+            "loading".to_string()
+        },
+        if args.source.is_some() {
+            "local".to_string()
+        } else {
+            args.game.clone()
+        },
         app_version,
         args.force,
         0,
         0.0,
         history_path,
+        args.source.clone(),
     );
 
     let res = (|| -> Result<()> {
@@ -660,6 +692,14 @@ fn handle_key_event(
             }
             KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
                 app.scroll_details_down();
+            }
+            KeyCode::Char('r')
+                if modifiers.contains(KeyModifiers::CONTROL)
+                    || modifiers.contains(KeyModifiers::SUPER) =>
+            {
+                if app.source_dir.is_some() {
+                    app.pending_action = Some(AppAction::ReloadSource);
+                }
             }
             KeyCode::Char(c)
                 if c.is_alphanumeric()
@@ -889,6 +929,12 @@ where
             }
             load_game_data_with_ui(terminal, app, None, &version, app.force_download)?;
         }
+        AppAction::ReloadSource => {
+            if app.source_dir.is_some() {
+                app.source_warnings.clear();
+                load_game_data_with_ui(terminal, app, None, "local", app.force_download)?;
+            }
+        }
     }
 
     Ok(())
@@ -952,7 +998,12 @@ fn load_game_data_with_ui<B: ratatui::backend::Backend>(
 where
     B::Error: Send + Sync + 'static,
 {
-    let root = if let Some(file) = file_path {
+    let source_dir_opt = app.source_dir.clone();
+    let root = if let Some(source_dir) = source_dir_opt {
+        app.start_progress("Loading local data", &["Loading files", "Indexing"]);
+        terminal.draw(|f| ui::ui(f, app))?;
+        data::load_from_source(&source_dir, &mut app.source_warnings)?
+    } else if let Some(file) = file_path {
         app.start_progress("Loading data", &["Parsing", "Indexing"]);
         terminal.draw(|f| ui::ui(f, app))?;
         data::load_root(file)?
@@ -964,7 +1015,15 @@ where
         let mut last_draw = Instant::now();
         let mut draw_error: Option<anyhow::Error> = None;
         let path = data::fetch_game_data_with_progress(version, force, |progress| {
-            let ratio = progress_ratio(progress);
+            let ratio = data::DownloadProgress {
+                downloaded: progress.downloaded,
+                total: progress.total,
+            };
+            let ratio = if let Some(t) = ratio.total {
+                ratio.downloaded as f64 / t as f64
+            } else {
+                0.0
+            };
             let elapsed_ok = last_draw.elapsed() >= Duration::from_millis(120);
             let ratio_ok = (ratio - last_ratio).abs() >= 0.01;
             let should_draw = if progress.total.is_some() {
@@ -1228,6 +1287,7 @@ mod tests {
             2,
             0.0,
             std::path::PathBuf::from("/tmp/history.txt"),
+            None,
         );
 
         assert_eq!(app.list_state.selected(), Some(0));
@@ -1275,6 +1335,7 @@ mod tests {
             2,
             0.0,
             std::path::PathBuf::from("/tmp/history.txt"),
+            None,
         );
 
         handle_key_event(
@@ -1322,6 +1383,7 @@ mod tests {
             1,
             0.0,
             std::path::PathBuf::from("/tmp/history.txt"),
+            None,
         );
 
         handle_key_event(
@@ -1355,6 +1417,7 @@ mod tests {
             1,
             0.0,
             history_path.clone(),
+            None,
         );
 
         app.input_mode = InputMode::Filtering;
@@ -1403,6 +1466,7 @@ mod tests {
             1,
             0.0,
             std::path::PathBuf::from("/tmp/history.txt"),
+            None,
         );
 
         handle_key_event(
@@ -1432,6 +1496,7 @@ mod tests {
             1,
             0.0,
             std::path::PathBuf::from("/tmp/history.txt"),
+            None,
         );
 
         app.refresh_details();
@@ -1443,6 +1508,37 @@ mod tests {
             .iter()
             .any(|line| line.iter().any(|s| s.span.content == "\"id\""));
         assert!(found_id);
+    }
+
+    #[test]
+    fn test_id_set_populated() {
+        use serde_json::json;
+        let indexed_items = vec![
+            (
+                json!({"id": "base_rifle"}),
+                "base_rifle".to_string(),
+                "t".to_string(),
+            ),
+            (json!({"id": "other"}), "other".to_string(), "t".to_string()),
+            (json!({"name": "no_id"}), "".to_string(), "t".to_string()),
+        ];
+        let search_index = search_index::SearchIndex::build(&indexed_items);
+        let app = AppState::new(
+            indexed_items,
+            search_index,
+            theme::Theme::Dracula.config(),
+            "v1".to_string(),
+            "v1".to_string(),
+            "v1".to_string(),
+            false,
+            3,
+            0.0,
+            std::path::PathBuf::from("/tmp/h.txt"),
+            None,
+        );
+        assert!(app.id_set.contains("base_rifle"));
+        assert!(app.id_set.contains("other"));
+        assert_eq!(app.id_set.len(), 2);
     }
 
     #[test]
