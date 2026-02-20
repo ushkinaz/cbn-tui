@@ -198,9 +198,14 @@ pub(crate) fn matches_value(value: &Value, pattern: &str, exact: bool) -> bool {
 ///
 /// **Optimization Note:** If `exact` is false, `pattern` MUST be passed in lowercase.
 pub(crate) fn matches_field(json: &Value, field_name: &str, pattern: &str, exact: bool) -> bool {
-    // Handle nested field access (e.g., "bash.str_min")
+    // Split once here; recursive calls use matches_field_parts to avoid re-splitting.
     let parts: Vec<&str> = field_name.split('.').collect();
+    matches_field_parts(json, &parts, pattern, exact)
+}
 
+/// Inner implementation that operates on a pre-split path slice, avoiding repeated
+/// split().collect() allocations when called across many items in the slow search path.
+fn matches_field_parts(json: &Value, parts: &[&str], pattern: &str, exact: bool) -> bool {
     let mut current = json;
     for (i, part) in parts.iter().enumerate() {
         match current {
@@ -219,12 +224,11 @@ pub(crate) fn matches_field(json: &Value, field_name: &str, pattern: &str, exact
                 }
             }
             Value::Array(arr) => {
-                // If the current is an array, try to traverse through each element
-                let remaining_parts: Vec<&str> = parts[i..].to_vec();
-                let remaining_path = remaining_parts.join(".");
+                // Pass the remaining slice directly — no re-join/re-split needed.
+                let remaining = &parts[i..];
                 return arr
                     .iter()
-                    .any(|item| matches_field(item, &remaining_path, pattern, exact));
+                    .any(|item| matches_field_parts(item, remaining, pattern, exact));
             }
             _ => {
                 // The current value is not an object or array, can't traverse further
@@ -332,18 +336,21 @@ fn slow_search_classifier(
     pattern: &str,
     exact: bool,
 ) -> foldhash::HashSet<usize> {
-    // Optimization: Pre-calculate the pattern to match against.
-    // If not exact, we lowercase it once here instead of for every value check.
+    // Pre-lowercase the pattern once (avoids repeated work per item).
     let pattern_owned = if exact {
         pattern.to_string()
     } else {
         pattern.to_lowercase()
     };
 
+    // Pre-split the field path once outside the per-item loop.
+    // Previously matches_field split on every item visit.
+    let parts: Vec<&str> = classifier.split('.').collect();
+
     items
         .iter()
         .enumerate()
-        .filter(|(_, (json, _, _))| matches_field(json, classifier, &pattern_owned, exact))
+        .filter(|(_, (json, _, _))| matches_field_parts(json, &parts, &pattern_owned, exact))
         .map(|(idx, _)| idx)
         .collect()
 }
