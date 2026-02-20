@@ -200,6 +200,9 @@ pub struct AppState {
     /// Rebuilt only when filtered_indices changes, used by render_item_list via &str borrows
     /// to avoid JSON traversal and String allocations on every frame.
     pub cached_display: Vec<(String, String)>,
+    /// Cached horizontal separator for the details pane to avoid an allocation per frame.
+    /// Stores the width and the generated string.
+    cached_separator: (u16, String),
 }
 
 impl AppState {
@@ -276,6 +279,7 @@ impl AppState {
             source_warnings: Vec::new(),
             cached_details_item_idx: None,
             cached_display: Vec::new(),
+            cached_separator: (0, String::new()),
         };
         app.load_history();
         app.refresh_details();
@@ -298,6 +302,15 @@ impl AppState {
         }
         let content = self.filter_history.join("\n");
         let _ = fs::write(&self.history_path, content);
+    }
+
+    /// Gets or creates the horizontal separator for a given width.
+    pub fn get_separator(&mut self, width: u16) -> &str {
+        if self.cached_separator.0 != width {
+            let separator = format!("├{}┤", "─".repeat(width as usize));
+            self.cached_separator = (width, separator);
+        }
+        &self.cached_separator.1
     }
 
     fn refresh_details(&mut self) {

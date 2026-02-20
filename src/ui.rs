@@ -198,9 +198,10 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
             // Render a horizontal separator line that merges with borders
             let separator_y = inner_area.y + header_height;
             if separator_y < area.y + area.height - 1 {
-                let separator_line = format!("├{}┤", "─".repeat(inner_area.width as usize));
+                let border_style = app.theme.border;
+                let separator_line = app.get_separator(inner_area.width);
                 f.render_widget(
-                    Paragraph::new(separator_line).style(app.theme.border),
+                    Paragraph::new(separator_line).style(border_style),
                     Rect::new(area.x, separator_y, area.width, 1),
                 );
                 content_area = Rect::new(

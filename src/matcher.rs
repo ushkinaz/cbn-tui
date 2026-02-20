@@ -197,6 +197,7 @@ pub(crate) fn matches_value(value: &Value, pattern: &str, exact: bool) -> bool {
 /// and checks if any value found at that path matches the criteria.
 ///
 /// **Optimization Note:** If `exact` is false, `pattern` MUST be passed in lowercase.
+#[allow(dead_code)]
 pub(crate) fn matches_field(json: &Value, field_name: &str, pattern: &str, exact: bool) -> bool {
     // Split once here; recursive calls use matches_field_parts to avoid re-splitting.
     let parts: Vec<&str> = field_name.split('.').collect();
