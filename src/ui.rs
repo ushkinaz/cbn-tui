@@ -172,14 +172,12 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
     let is_focused = app.focused_pane == FocusPane::Details;
     let block = Block::default()
         .borders(Borders::ALL)
-        .style(
-            if is_focused {
+        .border_style(if is_focused {
             app.theme.border_selected
         } else {
             app.theme.border
-            }
-            .bg(app.theme.background),
-        )
+        })
+        .style(app.theme.text)
         .title(" JSON ")
         .title_alignment(Alignment::Left)
         .title_style(app.theme.title)
@@ -465,7 +463,7 @@ fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(app.theme.border_selected)
-        .style(app.theme.border_selected.bg(app.theme.background))
+        .style(app.theme.text)
         .title(" Help ")
         .border_type(ratatui::widgets::BorderType::Double)
         .title_style(app.theme.title);
@@ -566,7 +564,7 @@ fn render_version_picker(f: &mut Frame, app: &mut AppState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(app.theme.border_selected)
-        .style(app.theme.border_selected.bg(app.theme.background))
+        .style(app.theme.text)
         .title(" Game Versions ")
         .title_style(app.theme.title)
         .title_bottom(Line::from(" enter select / esc close ").right_aligned());
@@ -618,7 +616,7 @@ fn render_progress_modal(f: &mut Frame, app: &mut AppState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(app.theme.border_selected)
-        .style(app.theme.border_selected.bg(app.theme.background))
+        .style(app.theme.text)
         .title(format!(" {} ", app.progress_title))
         .title_style(app.theme.title);
 
