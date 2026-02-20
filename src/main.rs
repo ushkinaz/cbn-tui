@@ -1650,7 +1650,6 @@ mod tests {
             items,
             0.0,
             std::path::PathBuf::from("/tmp/h.txt"),
-            None,
         )
     }
 
