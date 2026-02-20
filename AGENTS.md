@@ -142,3 +142,4 @@ Commit Message Rules
 - All commits follow Conventional Commits.
 - Format: `type(scope): summary`.
 - Examples: `feat(tui): add search highlights`, `fix(parser): handle empty ids`.
+  

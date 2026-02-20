@@ -34,6 +34,7 @@ pub struct AnnotatedSpan {
     /// The JSON key this value belongs to, if the span is a value.
     /// For keys themselves this is the key's own text.
     pub key_context: Option<Rc<str>>,
+    pub span_id: Option<usize>,
 }
 
 /// Main UI entry point that renders the entire application layout.
@@ -170,7 +171,8 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
             if app.details_wrapped_width != content_width {
                 app.details_wrapped_annotated =
                     wrap_annotated_lines(&app.details_annotated, content_width);
-                app.details_wrapped_text = annotated_to_text(app.details_wrapped_annotated.clone());
+                app.details_wrapped_text =
+                    annotated_to_text(app.details_wrapped_annotated.clone(), app.hovered_span_id);
                 app.details_wrapped_width = content_width;
             }
 
@@ -716,11 +718,26 @@ fn name_value(value: &Value) -> Option<String> {
 /// Applies syntax highlighting to JSON text using theme-consistent colors.
 /// Returns a Text object for ratatui rendering.
 /// Converts a matrix of AnnotatedSpans into a ratatui Text object.
-pub fn annotated_to_text(annotated: Vec<Vec<AnnotatedSpan>>) -> Text<'static> {
+pub fn annotated_to_text(
+    annotated: Vec<Vec<AnnotatedSpan>>,
+    hovered_span_id: Option<usize>,
+) -> Text<'static> {
     Text::from(
         annotated
             .into_iter()
-            .map(|line| Line::from(line.into_iter().map(|as_| as_.span).collect::<Vec<_>>()))
+            .map(|line| {
+                Line::from(
+                    line.into_iter()
+                        .map(|as_| {
+                            let mut span = as_.span;
+                            if hovered_span_id.is_some() && as_.span_id == hovered_span_id {
+                                span.style = span.style.add_modifier(Modifier::UNDERLINED);
+                            }
+                            span
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
             .collect::<Vec<_>>(),
     )
 }
@@ -771,6 +788,7 @@ pub fn wrap_annotated_lines(lines: &[Vec<AnnotatedSpan>], width: u16) -> Vec<Vec
                         span: Span::styled(part.to_string(), annotated.span.style),
                         kind: annotated.kind,
                         key_context: annotated.key_context.clone(),
+                        span_id: annotated.span_id,
                     });
                     current_width += fit_width;
                     content = &content[fit_len..];
@@ -792,6 +810,7 @@ pub fn wrap_annotated_lines(lines: &[Vec<AnnotatedSpan>], width: u16) -> Vec<Vec
                             ),
                             kind: annotated.kind,
                             key_context: annotated.key_context.clone(),
+                            span_id: annotated.span_id,
                         });
                         wrapped.push(current_wrapped_line);
                         current_wrapped_line = Vec::new();
@@ -811,15 +830,35 @@ pub fn wrap_annotated_lines(lines: &[Vec<AnnotatedSpan>], width: u16) -> Vec<Vec
 #[derive(Debug, Default)]
 struct JsonParserState {
     stack: Vec<Option<Rc<str>>>,
+    next_span_id: usize,
 }
 
 impl JsonParserState {
     fn new() -> Self {
-        Self { stack: vec![None] }
+        Self {
+            stack: vec![None],
+            next_span_id: 1,
+        }
+    }
+
+    fn next_id(&mut self) -> usize {
+        let id = self.next_span_id;
+        self.next_span_id += 1;
+        id
     }
 
     fn current_key(&self) -> Option<Rc<str>> {
-        self.stack.last().cloned().flatten()
+        let parts: Vec<&str> = self
+            .stack
+            .iter()
+            .filter_map(|k| k.as_deref())
+            .filter(|k| !k.is_empty())
+            .collect();
+        if parts.is_empty() {
+            None
+        } else {
+            Some(Rc::from(parts.join(".").as_str()))
+        }
     }
 
     fn update_key(&mut self, key: &str) {
@@ -829,12 +868,11 @@ impl JsonParserState {
     }
 
     fn push_object(&mut self) {
-        self.stack.push(None);
+        self.stack.push(None); // new object structure
     }
 
     fn push_array(&mut self) {
-        let current = self.current_key();
-        self.stack.push(current);
+        self.stack.push(None); // arrays do not add a key for their items
     }
 
     fn pop(&mut self) {
@@ -874,6 +912,7 @@ pub fn highlight_json_annotated(
                             span: Span::raw(prefix.to_string()),
                             kind: JsonSpanKind::StringValue,
                             key_context: state.current_key(),
+                            span_id: Some(state.next_id()),
                         });
                     }
                     remaining = &remaining[pos + 1..];
@@ -920,6 +959,7 @@ pub fn highlight_json_annotated(
                             ),
                             kind: JsonSpanKind::Key,
                             key_context: state.current_key(),
+                            span_id: None,
                         });
                     } else {
                         spans.push(AnnotatedSpan {
@@ -929,6 +969,7 @@ pub fn highlight_json_annotated(
                             ),
                             kind: JsonSpanKind::StringValue,
                             key_context: state.current_key(),
+                            span_id: Some(state.next_id()),
                         });
                     }
                     remaining = &rest[ep + 1..];
@@ -940,6 +981,7 @@ pub fn highlight_json_annotated(
                         ),
                         kind: JsonSpanKind::StringValue,
                         key_context: state.current_key(),
+                        span_id: Some(state.next_id()),
                     });
                     remaining = "";
                 }
@@ -969,6 +1011,7 @@ fn process_non_quoted(
                 span: Span::raw(remaining[..start_offset].to_string()),
                 kind: JsonSpanKind::Whitespace,
                 key_context: None,
+                span_id: None,
             });
         }
 
@@ -1040,10 +1083,18 @@ fn process_non_quoted(
             _ => None,
         };
 
+        let span_id = match kind {
+            JsonSpanKind::StringValue | JsonSpanKind::NumberValue | JsonSpanKind::BooleanValue => {
+                Some(state.next_id())
+            }
+            _ => None,
+        };
+
         spans.push(AnnotatedSpan {
             span: styled,
             kind,
             key_context,
+            span_id,
         });
         remaining = rest;
     }
@@ -1164,7 +1215,7 @@ mod tests {
 
         assert_eq!(inner_key.kind, JsonSpanKind::Key);
         assert_eq!(one_value.kind, JsonSpanKind::NumberValue);
-        assert_eq!(one_value.key_context, Some(Rc::from("inner")));
+        assert_eq!(one_value.key_context, Some(Rc::from("outer.inner")));
     }
 
     #[test]
@@ -1188,7 +1239,7 @@ mod tests {
         let json_str = r#"{"id": "test", "num": 123}"#;
         let style = crate::theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(json_str, &style);
-        let text = annotated_to_text(annotated);
+        let text = annotated_to_text(annotated, None);
 
         // Verification: ensure it still has some styled spans
         let mut has_styles = false;
@@ -1239,7 +1290,7 @@ mod tests {
         let val_1 = val_1.unwrap();
         let val_x = val_x.unwrap();
 
-        assert_eq!(val_1.key_context, Some(Rc::from("id")));
+        assert_eq!(val_1.key_context, Some(Rc::from("arr.id")));
         assert_eq!(val_x.key_context, Some(Rc::from("arr")));
     }
 

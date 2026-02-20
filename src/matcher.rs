@@ -24,7 +24,7 @@ pub(crate) fn parse_search_term(term: &str) -> SearchTerm {
         if value_part.starts_with('\'') && value_part.ends_with('\'') && value_part.len() >= 2 {
             SearchTerm {
                 classifier: Some(classifier),
-                pattern: value_part[1..value_part.len() - 1].to_string(),
+                pattern: unescape_exact_pattern(&value_part[1..value_part.len() - 1]),
                 exact: true,
             }
         } else {
@@ -39,7 +39,7 @@ pub(crate) fn parse_search_term(term: &str) -> SearchTerm {
         if term.starts_with('\'') && term.ends_with('\'') && term.len() >= 2 {
             SearchTerm {
                 classifier: None,
-                pattern: term[1..term.len() - 1].to_string(),
+                pattern: unescape_exact_pattern(&term[1..term.len() - 1]),
                 exact: true,
             }
         } else {
@@ -50,6 +50,92 @@ pub(crate) fn parse_search_term(term: &str) -> SearchTerm {
             }
         }
     }
+}
+
+fn unescape_exact_pattern(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(next) = chars.next() {
+                if next == '\'' || next == '\\' {
+                    out.push(next);
+                } else {
+                    out.push('\\');
+                    out.push(next);
+                }
+            } else {
+                out.push('\\');
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+
+    out
+}
+
+/// Splits a query string into terms while preserving quoted segments.
+///
+/// Whitespace delimits terms unless it's inside a single-quoted segment.
+/// Quotes only begin an exact segment at token start (or right after `:`),
+/// so apostrophes in normal words are preserved.
+fn split_query_terms(query: &str) -> Vec<String> {
+    fn is_escaped(input: &str, byte_idx: usize) -> bool {
+        let bytes = input.as_bytes();
+        let mut i = byte_idx;
+        let mut backslashes = 0;
+        while i > 0 && bytes[i - 1] == b'\\' {
+            backslashes += 1;
+            i -= 1;
+        }
+        backslashes % 2 == 1
+    }
+
+    let mut terms = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut in_single_quotes = false;
+    let mut chars = query.char_indices().peekable();
+
+    while let Some((idx, ch)) = chars.next() {
+        if ch.is_whitespace() && !in_single_quotes {
+            if let Some(token_start) = start.take() {
+                terms.push(query[token_start..idx].to_string());
+            }
+            continue;
+        }
+
+        if start.is_none() {
+            start = Some(idx);
+        }
+
+        if ch == '\'' && !is_escaped(query, idx) {
+            if !in_single_quotes {
+                if let Some(token_start) = start {
+                    let quote_starts_exact =
+                        idx == token_start || query[token_start..idx].ends_with(':');
+                    if quote_starts_exact {
+                        in_single_quotes = true;
+                    }
+                }
+            } else {
+                let next_is_delimiter = match chars.peek() {
+                    None => true,
+                    Some((_, next)) => next.is_whitespace(),
+                };
+                if next_is_delimiter {
+                    in_single_quotes = false;
+                }
+            }
+        }
+    }
+
+    if let Some(token_start) = start {
+        terms.push(query[token_start..].to_string());
+    }
+
+    terms
 }
 
 /// Recursively checks if a JSON value matches the search criteria.
@@ -165,7 +251,10 @@ pub fn search_with_index(
     }
 
     // Parse all search terms at once (not per item)
-    let terms: Vec<SearchTerm> = query.split_whitespace().map(parse_search_term).collect();
+    let terms: Vec<SearchTerm> = split_query_terms(query)
+        .iter()
+        .map(|term| parse_search_term(term))
+        .collect();
 
     // Start with all items, then intersect with results from each term
     let mut results: Option<HashSet<usize>> = None;
@@ -339,6 +428,37 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_classifier_quoted_escaped_apostrophe() {
+        let term = parse_search_term("snippet:'You wouldn\\'t buy'");
+        assert_eq!(
+            term,
+            SearchTerm {
+                classifier: Some("snippet".to_string()),
+                pattern: "You wouldn't buy".to_string(),
+                exact: true
+            }
+        );
+    }
+
+    #[test]
+    fn test_split_query_terms_preserves_quoted_spaces() {
+        let terms = split_query_terms("id:test snippet:'exact phrase match'");
+        assert_eq!(terms, vec!["id:test", "snippet:'exact phrase match'"]);
+    }
+
+    #[test]
+    fn test_split_query_terms_preserves_apostrophe_inside_quotes() {
+        let terms = split_query_terms("snippet:'You wouldn't buy a car'");
+        assert_eq!(terms, vec!["snippet:'You wouldn't buy a car'"]);
+    }
+
+    #[test]
+    fn test_split_query_terms_keeps_unquoted_apostrophe() {
+        let terms = split_query_terms("id:wouldn't");
+        assert_eq!(terms, vec!["id:wouldn't"]);
+    }
+
+    #[test]
     fn test_matches_value_string_pattern() {
         // When exact=false, pattern must be lowercase
         assert!(matches_value(&json!("EMITTER"), "emit", false));
@@ -459,6 +579,51 @@ mod tests {
         assert!(
             !search_with_index(&index, &items, "'EMITTER'").is_empty(),
             "'EMITTER' should match"
+        );
+    }
+
+    #[test]
+    fn test_search_classifier_exact_with_spaces() {
+        let items = vec![(
+            json!({"snippet": "exact phrase match"}),
+            "test".to_string(),
+            "item".to_string(),
+        )];
+        let index = crate::search_index::SearchIndex::build(&items);
+
+        assert!(
+            !search_with_index(&index, &items, "snippet:'exact phrase match'").is_empty(),
+            "Exact classifier query with spaces should match"
+        );
+    }
+
+    #[test]
+    fn test_search_classifier_exact_with_apostrophe() {
+        let items = vec![(
+            json!({"snippet": "You wouldn't buy a car"}),
+            "test".to_string(),
+            "item".to_string(),
+        )];
+        let index = crate::search_index::SearchIndex::build(&items);
+
+        assert!(
+            !search_with_index(&index, &items, "snippet:'You wouldn't buy a car'").is_empty(),
+            "Exact classifier query with apostrophe should match"
+        );
+    }
+
+    #[test]
+    fn test_search_classifier_exact_with_escaped_apostrophe() {
+        let items = vec![(
+            json!({"snippet": "You wouldn't buy a car"}),
+            "test".to_string(),
+            "item".to_string(),
+        )];
+        let index = crate::search_index::SearchIndex::build(&items);
+
+        assert!(
+            !search_with_index(&index, &items, "snippet:'You wouldn\\'t buy a car'").is_empty(),
+            "Escaped apostrophe exact query should match"
         );
     }
 
