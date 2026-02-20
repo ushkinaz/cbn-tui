@@ -107,7 +107,7 @@ enum AppAction {
 /// Application state for the Ratatui app.
 pub struct AppState {
     /// All loaded items in indexed format (json, id, type)
-    pub indexed_items: Vec<crate::data::IndexedItem>,
+    pub indexed_items: Vec<data::IndexedItem>,
     /// Search index for fast lookups
     pub search_index: search_index::SearchIndex,
     /// Set of purely IDs for O(1) existence checks (used for click navigation)
@@ -165,7 +165,7 @@ pub struct AppState {
     pub should_quit: bool,
     /// Whether help overlay is visible
     pub show_help: bool,
-    /// Whether version picker is visible
+    /// Whether a version picker is visible
     pub show_version_picker: bool,
     /// List of available versions for the picker
     pub version_entries: Vec<VersionEntry>,
@@ -206,7 +206,7 @@ pub struct AppState {
 impl AppState {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        indexed_items: Vec<crate::data::IndexedItem>,
+        indexed_items: Vec<data::IndexedItem>,
         search_index: search_index::SearchIndex,
         theme: theme::ThemeConfig,
         game_version: String,
@@ -317,11 +317,11 @@ impl AppState {
             .selected()
             .and_then(|sel| self.filtered_indices.get(sel).copied());
 
-        // Always reset scroll so navigation feels snappy.
+        // Always reset the scroll so navigation feels snappy.
         self.details_scroll_state = ScrollViewState::default();
 
         // Skip the expensive serde_json::to_string_pretty + highlight pass when
-        // the same item is already rendered. The wrapped cache is kept intact so
+        // the same item is already rendered. The wrapped cache is kept intact, so
         // the width-change guard in render_details still triggers a re-wrap on resize.
         if self.cached_details_item_idx == selected_item_idx && selected_item_idx.is_some() {
             return;
@@ -382,7 +382,7 @@ impl AppState {
         self.refresh_details();
     }
 
-    pub fn get_selected_item(&self) -> Option<&crate::data::IndexedItem> {
+    pub fn get_selected_item(&self) -> Option<&data::IndexedItem> {
         self.list_state
             .selected()
             .and_then(|idx| self.filtered_indices.get(idx))
@@ -498,7 +498,7 @@ impl AppState {
 
     fn apply_new_dataset(
         &mut self,
-        indexed_items: Vec<crate::data::IndexedItem>,
+        indexed_items: Vec<data::IndexedItem>,
         search_index: search_index::SearchIndex,
         total_items: usize,
         index_time_ms: f64,
@@ -1283,14 +1283,14 @@ fn build_index_with_progress<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut AppState,
     data: Vec<Value>,
-) -> Result<(Vec<crate::data::IndexedItem>, search_index::SearchIndex, f64)>
+) -> Result<(Vec<data::IndexedItem>, search_index::SearchIndex, f64)>
 where
     B::Error: Send + Sync + 'static,
 {
     let total = data.len();
     let start = Instant::now();
     let mut last_draw = Instant::now();
-    let mut indexed_items: Vec<crate::data::IndexedItem> = Vec::with_capacity(total);
+    let mut indexed_items: Vec<data::IndexedItem> = Vec::with_capacity(total);
 
     for (idx, v) in data.into_iter().enumerate() {
         let id = v
@@ -1303,7 +1303,7 @@ where
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        indexed_items.push(crate::data::IndexedItem {
+        indexed_items.push(data::IndexedItem {
             value: v,
             id,
             item_type: type_,
@@ -1478,8 +1478,16 @@ mod tests {
     #[test]
     fn test_handle_key_event_navigation() {
         let indexed_items = vec![
-            crate::data::IndexedItem { value: json!({"id": "1"}), id: "1".to_string(), item_type: "type".to_string() },
-            crate::data::IndexedItem { value: json!({"id": "2"}), id: "2".to_string(), item_type: "type".to_string() },
+            data::IndexedItem {
+                value: json!({"id": "1"}),
+                id: "1".to_string(),
+                item_type: "type".to_string(),
+            },
+            data::IndexedItem {
+                value: json!({"id": "2"}),
+                id: "2".to_string(),
+                item_type: "type".to_string(),
+            },
         ];
         let search_index = search_index::SearchIndex::build(&indexed_items);
         let theme = theme::Theme::Dracula.config();
@@ -1518,12 +1526,12 @@ mod tests {
     #[test]
     fn test_handle_key_event_filtering() {
         let indexed_items = vec![
-            crate::data::IndexedItem {
+            data::IndexedItem {
                 value: json!({"id": "apple"}),
                 id: "apple".to_string(),
                 item_type: "fruit".to_string(),
             },
-            crate::data::IndexedItem {
+            data::IndexedItem {
                 value: json!({"id": "banana"}),
                 id: "banana".to_string(),
                 item_type: "fruit".to_string(),
@@ -1576,7 +1584,11 @@ mod tests {
 
     #[test]
     fn test_handle_key_event_autofocus_filter() {
-        let indexed_items = vec![crate::data::IndexedItem { value: json!({"id": "1"}), id: "1".to_string(), item_type: "t".to_string() }];
+        let indexed_items = vec![data::IndexedItem {
+            value: json!({"id": "1"}),
+            id: "1".to_string(),
+            item_type: "t".to_string(),
+        }];
         let search_index = search_index::SearchIndex::build(&indexed_items);
         let theme = theme::Theme::Dracula.config();
 
@@ -1606,7 +1618,11 @@ mod tests {
 
     #[test]
     fn test_filter_history() {
-        let indexed_items = vec![crate::data::IndexedItem { value: json!({"id": "1"}), id: "1".to_string(), item_type: "t".to_string() }];
+        let indexed_items = vec![data::IndexedItem {
+            value: json!({"id": "1"}),
+            id: "1".to_string(),
+            item_type: "t".to_string(),
+        }];
         let search_index = search_index::SearchIndex::build(&indexed_items);
         let theme = theme::Theme::Dracula.config();
         let history_path = std::path::PathBuf::from("/tmp/cbn_test_history.txt");
@@ -1655,7 +1671,7 @@ mod tests {
 
     #[test]
     fn test_handle_key_event_ignores_release_kind() {
-        let indexed_items = vec![crate::data::IndexedItem {
+        let indexed_items = vec![data::IndexedItem {
             value: json!({"id": "apple"}),
             id: "apple".to_string(),
             item_type: "fruit".to_string(),
@@ -1690,7 +1706,11 @@ mod tests {
 
     #[test]
     fn test_refresh_details_populates_annotated() {
-        let indexed_items = vec![crate::data::IndexedItem { value: json!({"id": "1"}), id: "1".to_string(), item_type: "t".to_string() }];
+        let indexed_items = vec![data::IndexedItem {
+            value: json!({"id": "1"}),
+            id: "1".to_string(),
+            item_type: "t".to_string(),
+        }];
         let search_index = search_index::SearchIndex::build(&indexed_items);
         let theme = theme::Theme::Dracula.config();
         let mut app = AppState::new(
@@ -1722,13 +1742,21 @@ mod tests {
     fn test_id_set_populated() {
         use serde_json::json;
         let indexed_items = vec![
-            crate::data::IndexedItem {
+            data::IndexedItem {
                 value: json!({"id": "base_rifle"}),
                 id: "base_rifle".to_string(),
                 item_type: "t".to_string(),
             },
-            crate::data::IndexedItem { value: json!({"id": "other"}), id: "other".to_string(), item_type: "t".to_string() },
-            crate::data::IndexedItem { value: json!({"name": "no_id"}), id: "".to_string(), item_type: "t".to_string() },
+            data::IndexedItem {
+                value: json!({"id": "other"}),
+                id: "other".to_string(),
+                item_type: "t".to_string(),
+            },
+            data::IndexedItem {
+                value: json!({"name": "no_id"}),
+                id: "".to_string(),
+                item_type: "t".to_string(),
+            },
         ];
         let search_index = search_index::SearchIndex::build(&indexed_items);
         let app = AppState::new(
@@ -1762,7 +1790,11 @@ mod tests {
         let indexed_items = (0..items)
             .map(|i| {
                 let id = format!("item_{}", i);
-                crate::data::IndexedItem { value: json!({"id": id.clone()}), id, item_type: "t".to_string() }
+                data::IndexedItem {
+                    value: json!({"id": id.clone()}),
+                    id,
+                    item_type: "t".to_string(),
+                }
             })
             .collect::<Vec<_>>();
         let search_index = search_index::SearchIndex::build(&indexed_items);

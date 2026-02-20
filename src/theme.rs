@@ -57,26 +57,26 @@ pub struct JsonStyle {
 /// Complete theme configuration for ratatui.
 ///
 /// # Theming Guidelines for New Widgets
-/// 
-/// When creating new UI widgets or dialogs, follow these rules to ensure 
+///
+/// When creating new UI widgets or dialogs, follow these rules to ensure
 /// consistent rendering across all themes (especially those with contrasting backgrounds):
-/// 
+///
 /// 1. **Base Block Styling:**
 ///    Always apply `app.theme.text` to the `.style()` of the base `Block` or popup.
 ///    This ensures the widget's content area has the correct background color.
-///    *Do not* use `app.theme.background` for widget backgrounds, as it is 
+///    *Do not* use `app.theme.background` for widget backgrounds, as it is
 ///    intended for the terminal's root empty space.
-/// 
+///
 /// 2. **Borders:**
 ///    Use `.border_style(app.theme.border)` (or `border_selected` if focused)
 ///    for the block's borders. The borders will automatically inherit their
 ///    background color from the block's base `.style()`.
-/// 
+///
 /// 3. **Titles:**
 ///    Use `.title_style(app.theme.title)` for titles.
-/// 
+///
 /// 4. **Lists:**
-///    Use `list_normal` for the base `List` style and `list_selected` for 
+///    Use `list_normal` for the base `List` style and `list_selected` for
 ///    the `.highlight_style()`.
 #[derive(Clone)]
 pub struct ThemeConfig {

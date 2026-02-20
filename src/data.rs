@@ -261,8 +261,8 @@ pub fn load_from_source(source_dir: &str, warnings: &mut Vec<String>) -> Result<
         .filter_map(Result::ok)
         .filter(|e| !e.file_type().is_dir())
     {
-        if let Some(ext) = entry.path().extension() {
-            if ext == "json" {
+        if let Some(ext) = entry.path().extension()
+            && ext == "json" {
                 match fs::File::open(entry.path()) {
                     Ok(file) => {
                         let reader = io::BufReader::new(file);
@@ -323,7 +323,6 @@ pub fn load_from_source(source_dir: &str, warnings: &mut Vec<String>) -> Result<
                     }
                 }
             }
-        }
     }
 
     if data.is_empty() {

@@ -1,6 +1,6 @@
+use crate::data::IndexedItem;
 use foldhash::{HashMap, HashSet};
 use serde_json::Value;
-use crate::data::IndexedItem;
 
 /// Inverted index for fast search across 30k+ items
 /// Indexes common fields (id/abstract, type, category) and tokenized words
@@ -183,7 +183,7 @@ impl SearchIndex {
         }
     }
 
-    /// Fast lookup in specific field index
+    /// Fast lookup in a specific field index 
     /// Returns indices of items matching the pattern
     pub fn lookup_field(
         &self,
@@ -197,7 +197,7 @@ impl SearchIndex {
             // Exact match - direct lookup
             field_index.get(&pattern_lower).cloned().unwrap_or_default()
         } else {
-            // Pattern match - check all keys containing pattern
+            // Pattern match - check all keys containing a pattern
             field_index
                 .iter()
                 .filter(|(key, _)| key.contains(&pattern_lower))
@@ -258,7 +258,7 @@ mod tests {
             !index.word_index.is_empty(),
             "Word index should not be empty"
         );
-        // "weapons" from category should be indexed
+        // "weapons" from the category should be indexed
         assert!(index.word_index.contains_key("weapons"));
     }
 

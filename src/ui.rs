@@ -31,7 +31,7 @@ pub enum JsonSpanKind {
 pub struct AnnotatedSpan {
     pub span: Span<'static>,
     pub kind: JsonSpanKind,
-    /// The JSON key this value belongs to, if the span is a value.
+    /// The JSON key this value belongs to if the span is a value.
     /// For keys themselves this is the key's own text.
     pub key_context: Option<Rc<str>>,
     pub span_id: Option<usize>,
@@ -80,7 +80,7 @@ pub fn ui(f: &mut Frame, app: &mut AppState) {
 }
 
 fn compute_details_content_area(app: &AppState, area: Rect) -> Option<Rect> {
-    let inner_area = area.inner(ratatui::layout::Margin::new(1, 1));
+    let inner_area = area.inner(Margin::new(1, 1));
     if inner_area.width == 0 || inner_area.height == 0 {
         return None;
     }
@@ -413,7 +413,7 @@ fn render_status_bar_operational(f: &mut Frame, app: &mut AppState, area: Rect) 
         spans.push(Span::raw(" |"));
         spans.push(Span::styled(
             " *",
-            ratatui::style::Style::default()
+            Style::default()
                 .fg(ratatui::style::Color::Red)
                 .add_modifier(Modifier::BOLD),
         ));
@@ -787,10 +787,10 @@ fn name_value(value: &Value) -> Option<String> {
 /// Returns a Text object for ratatui rendering.
 /// Converts a matrix of AnnotatedSpans into a ratatui Text object.
 /// Takes a borrow so callers avoid an expensive clone of the full buffer.
-pub fn annotated_to_text<'a>(
-    annotated: &'a [Vec<AnnotatedSpan>],
+pub fn annotated_to_text(
+    annotated: &'_ [Vec<AnnotatedSpan>],
     hovered_span_id: Option<usize>,
-) -> Text<'a> {
+) -> Text<'_> {
     Text::from(
         annotated
             .iter()
@@ -862,8 +862,8 @@ pub fn wrap_annotated_lines(lines: &[Vec<AnnotatedSpan>], width: u16) -> Vec<Vec
                     current_width += fit_width;
                     content = &content[fit_len..];
                 } else {
-                    // Even one character doesn't fit? This should only happen if width is extremely small.
-                    // Push current line and start new one.
+                    // Even one character doesn't fit? This should only happen if the width is tiny.
+                    // Push the current line and start a new one.
                     if !current_wrapped_line.is_empty() {
                         wrapped.push(current_wrapped_line);
                         current_wrapped_line = Vec::new();
@@ -900,7 +900,7 @@ pub fn wrap_annotated_lines(lines: &[Vec<AnnotatedSpan>], width: u16) -> Vec<Vec
 struct JsonParserState {
     /// Each level holds the current key name at that nesting depth (None for array slots).
     stack: Vec<Option<String>>,
-    /// Eagerly-maintained dot-joined path cached as an Rc<str>.
+    /// Eagerly maintained dot-joined path cached as a Rc<str>.
     /// current_key() just clones this — O(1) with no heap allocation.
     /// Rebuilt (O(depth)) only on push/pop/update_key, which are rare vs. per-span calls.
     current_path_rc: Option<Rc<str>>,
@@ -931,14 +931,13 @@ impl JsonParserState {
     fn rebuild_path(&mut self) {
         let mut path = String::new();
         for entry in &self.stack {
-            if let Some(k) = entry {
-                if !k.is_empty() {
+            if let Some(k) = entry
+                && !k.is_empty() {
                     if !path.is_empty() {
                         path.push('.');
                     }
                     path.push_str(k);
                 }
-            }
         }
         self.current_path_rc = if path.is_empty() {
             None
@@ -1272,7 +1271,7 @@ mod tests {
     #[test]
     fn test_annotated_spans_key_value_pair() {
         let json_str = r#"  "range": 60"#;
-        let style = crate::theme::Theme::Dracula.config().json_style;
+        let style = theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(json_str, &style);
 
         assert_eq!(annotated.len(), 1);
@@ -1293,7 +1292,7 @@ mod tests {
     #[test]
     fn test_annotated_spans_string_value() {
         let json_str = r#""copy-from": "base_rifle""#;
-        let style = crate::theme::Theme::Dracula.config().json_style;
+        let style = theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(json_str, &style);
 
         let line = &annotated[0];
@@ -1307,7 +1306,7 @@ mod tests {
     #[test]
     fn test_annotated_spans_boolean() {
         let json_str = r#""active": true"#;
-        let style = crate::theme::Theme::Dracula.config().json_style;
+        let style = theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(json_str, &style);
 
         let line = &annotated[0];
@@ -1319,7 +1318,7 @@ mod tests {
     #[test]
     fn test_annotated_spans_nested_object() {
         let json_str = "{ \"outer\": { \"inner\": 1 } }";
-        let style = crate::theme::Theme::Dracula.config().json_style;
+        let style = theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(json_str, &style);
 
         let line = &annotated[0];
@@ -1335,7 +1334,7 @@ mod tests {
     #[test]
     fn test_annotated_spans_array() {
         let json_str = r#""tags": ["a", "b"]"#;
-        let style = crate::theme::Theme::Dracula.config().json_style;
+        let style = theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(json_str, &style);
 
         let line = &annotated[0];
@@ -1351,7 +1350,7 @@ mod tests {
     #[test]
     fn test_to_text_preserves_rendering() {
         let json_str = r#"{"id": "test", "num": 123}"#;
-        let style = crate::theme::Theme::Dracula.config().json_style;
+        let style = theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(json_str, &style);
         let text = annotated_to_text(&annotated, None);
 
@@ -1370,7 +1369,7 @@ mod tests {
     #[test]
     fn test_annotated_spans_escaped_quotes() {
         let json_str = r#""text": "he said \"hello\"""#;
-        let style = crate::theme::Theme::Dracula.config().json_style;
+        let style = theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(json_str, &style);
 
         let line = &annotated[0];
@@ -1384,7 +1383,7 @@ mod tests {
     #[test]
     fn test_annotated_spans_nested_array_context() {
         let json_str = r#"{ "arr": [{"id": 1}, "x"] }"#;
-        let style = crate::theme::Theme::Dracula.config().json_style;
+        let style = theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(json_str, &style);
 
         let mut val_1 = None;
@@ -1410,7 +1409,7 @@ mod tests {
 
     #[test]
     fn test_hit_test_outside_area_returns_none() {
-        let style = crate::theme::Theme::Dracula.config().json_style;
+        let style = theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(r#"{"id": 1}"#, &style);
         let wrapped = wrap_annotated_lines(&annotated, 80);
 
@@ -1418,9 +1417,9 @@ mod tests {
         app.details_wrapped_annotated = wrapped;
         app.details_content_area = Some(Rect::new(10, 10, 40, 10));
 
-        // Outside area (above)
+        // The outside area (above)
         assert!(hit_test_details(&app, 15, 5).is_none());
-        // Outside area (left)
+        // The outside area (left)
         assert!(hit_test_details(&app, 5, 15).is_none());
         // In gutter (horizontal padding = 1)
         assert!(hit_test_details(&app, 10, 15).is_none());
@@ -1428,7 +1427,7 @@ mod tests {
 
     #[test]
     fn test_hit_test_on_key_span() {
-        let style = crate::theme::Theme::Dracula.config().json_style;
+        let style = theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(r#""id": 1"#, &style);
         let wrapped = wrap_annotated_lines(&annotated, 80);
 
@@ -1444,7 +1443,7 @@ mod tests {
 
     #[test]
     fn test_hit_test_on_value_span() {
-        let style = crate::theme::Theme::Dracula.config().json_style;
+        let style = theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(r#""id": 1"#, &style);
         let wrapped = wrap_annotated_lines(&annotated, 80);
 
@@ -1461,7 +1460,7 @@ mod tests {
         assert_eq!(span.key_context, Some(Rc::from("id")));
     }
 
-    fn create_test_app() -> crate::AppState {
+    fn create_test_app() -> AppState {
         use serde_json::json;
         let indexed_items = vec![crate::data::IndexedItem {
             value: json!({"id": "1"}),
@@ -1469,8 +1468,8 @@ mod tests {
             item_type: "t".to_string(),
         }];
         let search_index = crate::search_index::SearchIndex::build(&indexed_items);
-        let theme = crate::theme::Theme::Dracula.config();
-        crate::AppState::new(
+        let theme = theme::Theme::Dracula.config();
+        AppState::new(
             indexed_items,
             search_index,
             theme,
