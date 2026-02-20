@@ -1540,34 +1540,4 @@ mod tests {
         assert!(app.id_set.contains("other"));
         assert_eq!(app.id_set.len(), 2);
     }
-
-    #[test]
-    fn test_id_set_populated() {
-        use serde_json::json;
-        let indexed_items = vec![
-            (
-                json!({"id": "base_rifle"}),
-                "base_rifle".to_string(),
-                "t".to_string(),
-            ),
-            (json!({"id": "other"}), "other".to_string(), "t".to_string()),
-            (json!({"name": "no_id"}), "".to_string(), "t".to_string()),
-        ];
-        let search_index = search_index::SearchIndex::build(&indexed_items);
-        let app = AppState::new(
-            indexed_items,
-            search_index,
-            theme::Theme::Dracula.config(),
-            "v1".to_string(),
-            "v1".to_string(),
-            "v1".to_string(),
-            false,
-            3,
-            0.0,
-            std::path::PathBuf::from("/tmp/h.txt"),
-        );
-        assert!(app.id_set.contains("base_rifle"));
-        assert!(app.id_set.contains("other"));
-        assert_eq!(app.id_set.len(), 2);
-    }
 }
