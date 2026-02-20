@@ -59,7 +59,6 @@ struct Args {
     config: bool,
 
     /// Clear the search history
-    /// Clear the search history
     #[arg(long)]
     clear_history: bool,
 
@@ -894,7 +893,12 @@ fn load_initial_data<B: ratatui::backend::Backend>(
 where
     B::Error: Send + Sync + 'static,
 {
-    load_game_data_with_ui(terminal, app, args.file.as_deref(), &args.game, args.force)
+    let version = if args.source.is_some() {
+        "local"
+    } else {
+        &args.game
+    };
+    load_game_data_with_ui(terminal, app, args.file.as_deref(), version, args.force)
 }
 
 fn handle_action<B: ratatui::backend::Backend>(
@@ -998,11 +1002,14 @@ fn load_game_data_with_ui<B: ratatui::backend::Backend>(
 where
     B::Error: Send + Sync + 'static,
 {
-    let source_dir_opt = app.source_dir.clone();
-    let root = if let Some(source_dir) = source_dir_opt {
+    let root = if version == "local" && app.source_dir.is_some() {
+        let source_dir = app.source_dir.clone().unwrap();
         app.start_progress("Loading local data", &["Loading files", "Indexing"]);
         terminal.draw(|f| ui::ui(f, app))?;
-        data::load_from_source(&source_dir, &mut app.source_warnings)?
+        let root = data::load_from_source(&source_dir, &mut app.source_warnings)?;
+        app.finish_stage("Loading files");
+        terminal.draw(|f| ui::ui(f, app))?;
+        root
     } else if let Some(file) = file_path {
         app.start_progress("Loading data", &["Parsing", "Indexing"]);
         terminal.draw(|f| ui::ui(f, app))?;
