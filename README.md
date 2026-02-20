@@ -20,15 +20,35 @@ Terminal User Interface (TUI) browser for **Cataclysm: Bright Nights** JSON data
 
 ## ⌨️ Controls
 
-| Key                   | Action                                        |
-|-----------------------|-----------------------------------------------|
-| `q` / `Esc`           | Quit Application                              |
-| `/`                   | Focus Search Bar                              |
-| `Tab` / `Shift-Tab`   | Cycle focus between List, Details, and Search |
-| `↑` / `↓`             | Move selection or scroll                      |
-| `PageUp` / `PageDown` | Scroll faster (10 items at a time)            |
-| `Enter`               | Confirm or exit input focus                   |
-| `Ctrl+G`              | Open game version switcher                    |
+### Global
+| Key                 | Action                                |
+|---------------------|---------------------------------------|
+| `Tab` / `Shift+Tab` | Cycle focus (Filter → List → Details) |
+| `Ctrl+G`            | Open Version Switcher                 |
+| `Ctrl+R`            | Reload Local Source (In-source mode)  |
+| `?`                 | Open Help Overlay                     |
+| `q`                 | Quit Application                      |
+
+### Navigation (Context-Aware)
+*Arrows, PageUp/Down, and Home/End act on the currently focused pane.*
+
+| Key                   | Action                                      |
+|-----------------------|---------------------------------------------|
+| `/`                   | Focus Filter Input                          |
+| `↑` / `↓`             | Move selection (List) or Scroll (Details)   |
+| `PageUp` / `PageDown` | Page scroll List or Details                 |
+| `Home` / `End`        | Go to start / end of List or Details        |
+| `Esc`                 | Return focus to List (from Details) or Quit |
+
+### Filter Input
+| Key                 | Action                                    |
+|---------------------|-------------------------------------------|
+| `↑` / `↓`           | Navigate search history                   |
+| `Ctrl+U`            | Clear entire filter                       |
+| `Ctrl+W`            | Delete last word                          |
+| `Ctrl+A` / `Ctrl+E` | Move to start / end of line               |
+| `Enter`             | Confirm search and focus List             |
+| `Esc`               | Clear filter (if not empty) or focus List |
 
 ## 🚀 Usage
 

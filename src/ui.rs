@@ -138,7 +138,11 @@ fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
         })
         .title_style(app.theme.title)
         .title(format!(" Items ({}) ", app.filtered_indices.len()))
-        .title_bottom(Line::from(" up / down ").right_aligned())
+        .title_bottom(if is_focused {
+            Line::from(" ↑/↓ move • Tab cycle ").right_aligned()
+        } else {
+            Line::from("").right_aligned()
+        })
         .title_alignment(Alignment::Left)
         .style(app.theme.list_normal);
 
@@ -181,7 +185,11 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
         .title(" JSON ")
         .title_alignment(Alignment::Left)
         .title_style(app.theme.title)
-        .title_bottom(Line::from(" pg-up / pg-down ").right_aligned());
+        .title_bottom(if is_focused {
+            Line::from(" ↑/↓ scroll • Tab cycle • Esc back ").right_aligned()
+        } else {
+            Line::from("").right_aligned()
+        });
 
     let inner_area = block.inner(area);
     f.render_widget(block, area);
@@ -324,7 +332,12 @@ fn render_filter(f: &mut Frame, app: &mut AppState, area: Rect) {
             app.theme.border
         })
         .title(" Filter (/) ")
-        .title_style(app.theme.title);
+        .title_style(app.theme.title)
+        .title_bottom(if is_focused {
+            Line::from(" ↑/↓ history • Tab cycle • Esc clear ").right_aligned()
+        } else {
+            Line::from("")
+        });
 
     let inner = block.inner(area);
     app.filter_input_area = Some(inner);
@@ -471,78 +484,74 @@ fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
     let inner_area = block.inner(popup_rect);
     f.render_widget(block, popup_rect);
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(12), // Navigation
-            Constraint::Length(1),  // Spacer
-            Constraint::Min(0),     // Search Syntax
-        ])
-        .margin(1)
-        .split(inner_area);
-
     let key_style = app.theme.title;
     let desc_style = app.theme.text;
     let header_style = key_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
 
-    // 1. Navigation Section
-    let nav_items = vec![
-        ("/", "filter items"),
-        ("Up | k", "selection up"),
-        ("Down | j", "selection down"),
-        ("Home", "selection to start"),
-        ("End", "selection to end"),
-        ("PgUp | Ctrl+k", "scroll JSON up"),
-        ("PgDown | Ctrl+j", "scroll JSON down"),
-        ("Ctrl+R", "reload local source"),
-        ("Ctrl+G", "version switcher"),
-        ("?", "this help"),
-        ("Esc", "back / quit"),
-        ("q", "quit"),
-    ];
+    let format_section = |title: &str, items: Vec<(&str, &str)>| -> Vec<Line<'static>> {
+        let mut lines = vec![Line::from(Span::styled(title.to_string(), header_style))];
+        for (key, desc) in items {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{: <18}", key), key_style),
+                Span::styled(desc.to_string(), desc_style),
+            ]));
+        }
+        lines
+    };
 
-    let mut nav_lines = vec![Line::from(Span::styled("Navigation", header_style))];
-    for (key, desc) in nav_items {
-        nav_lines.push(Line::from(vec![
-            Span::styled(format!("{: <18}", key), key_style),
-            Span::styled(desc, desc_style),
-        ]));
-    }
+    let nav_lines = format_section(
+        "Navigation",
+        vec![
+            ("/", "filter items"),
+            ("Tab | Shift+Tab", "next | prev pane focus"),
+            ("Ctrl+R", "reload local source"),
+            ("Ctrl+G", "version switcher"),
+            ("q", "quit"),
+        ],
+    );
+    let nav_height = nav_lines.len() as u16;
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(nav_height), // Dynamic height based on items
+            Constraint::Length(1),          // Spacer
+            Constraint::Min(0),             // Search Syntax / Input
+        ])
+        .margin(1)
+        .split(inner_area);
+
     f.render_widget(Paragraph::new(nav_lines), chunks[0]);
 
-    // 2. Search Syntax Section
-    let syntax_lines = vec![
-        Line::from(Span::styled("Search Syntax", header_style)),
-        Line::from(vec![
-            Span::styled("word", key_style),
-            Span::styled(" - generic search in all fields", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("t:gun", key_style),
-            Span::styled(
-                " - filter by type (shortcuts: i:id, t:type, c:cat)",
-                desc_style,
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("bash.str_min:30", key_style),
-            Span::styled(" - filter by nested field", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("'term'", key_style),
-            Span::styled(" - exact match (surround with single quotes)", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("term1 term2", key_style),
-            Span::styled(" - AND logic (matches both terms)", desc_style),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Example: ", key_style.add_modifier(Modifier::BOLD)),
-            Span::styled("t:gun ammo:rpg", desc_style),
-        ]),
-    ];
-    f.render_widget(Paragraph::new(syntax_lines), chunks[2]);
+    let mut combined_lines = format_section(
+        "Filter",
+        vec![
+            ("Up | Down", "history"),
+            ("Ctrl+U", "clear filter"),
+            ("Ctrl+W", "delete word"),
+            ("Ctrl+A | E", "start | end of line"),
+        ],
+    );
+
+    combined_lines.push(Line::from(""));
+    combined_lines.extend(format_section(
+        "Search Syntax",
+        vec![
+            ("zombie", "- generic search in all fields"),
+            ("t:gun", "- filter by type (i:id, t:type, c:cat)"),
+            ("bash.str_min:30", "- filter by nested field"),
+            ("'term'", "- exact match"),
+            ("term1 term2", "- AND logic"),
+        ],
+    ));
+
+    combined_lines.push(Line::from(""));
+    combined_lines.push(Line::from(vec![
+        Span::styled("Example: ", key_style.add_modifier(Modifier::BOLD)),
+        Span::styled("t:gun ammo:rpg", desc_style),
+    ]));
+
+    f.render_widget(Paragraph::new(combined_lines), chunks[2]);
 }
 
 fn render_version_picker(f: &mut Frame, app: &mut AppState) {
@@ -566,8 +575,7 @@ fn render_version_picker(f: &mut Frame, app: &mut AppState) {
         .border_style(app.theme.border_selected)
         .style(app.theme.text)
         .title(" Game Versions ")
-        .title_style(app.theme.title)
-        .title_bottom(Line::from(" enter select / esc close ").right_aligned());
+        .title_style(app.theme.title);
 
     let inner_area = block.inner(popup_rect);
     f.render_widget(block, popup_rect);

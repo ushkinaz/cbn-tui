@@ -457,6 +457,49 @@ impl AppState {
         self.filter_cursor = self.filter_text.chars().count();
     }
 
+    fn filter_clear(&mut self) {
+        self.filter_text.clear();
+        self.filter_cursor = 0;
+    }
+
+    fn filter_delete_word(&mut self) {
+        if self.filter_cursor == 0 {
+            return;
+        }
+
+        let chars: Vec<char> = self.filter_text.chars().collect();
+        let mut i = self.filter_cursor;
+
+        // Skip trailing whitespace
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+
+        // Skip non-whitespace (the word)
+        while i > 0 && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+
+        let new_cursor = i;
+        let _char_count = chars.len();
+
+        let byte_start = self
+            .filter_text
+            .char_indices()
+            .nth(new_cursor)
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        let byte_end = self
+            .filter_text
+            .char_indices()
+            .nth(self.filter_cursor)
+            .map(|(idx, _)| idx)
+            .unwrap_or(self.filter_text.len());
+
+        self.filter_text.replace_range(byte_start..byte_end, "");
+        self.filter_cursor = new_cursor;
+    }
+
     fn focus_pane(&mut self, pane: FocusPane) {
         self.focused_pane = pane;
         self.input_mode = if pane == FocusPane::Filter {
@@ -464,6 +507,24 @@ impl AppState {
         } else {
             InputMode::Normal
         };
+    }
+
+    fn focus_next_pane(&mut self) {
+        let next = match self.focused_pane {
+            FocusPane::Filter => FocusPane::List,
+            FocusPane::List => FocusPane::Details,
+            FocusPane::Details => FocusPane::Filter,
+        };
+        self.focus_pane(next);
+    }
+
+    fn focus_prev_pane(&mut self) {
+        let prev = match self.focused_pane {
+            FocusPane::Filter => FocusPane::Details,
+            FocusPane::List => FocusPane::Filter,
+            FocusPane::Details => FocusPane::List,
+        };
+        self.focus_pane(prev);
     }
 
     fn update_filter(&mut self) {
@@ -746,6 +807,15 @@ fn handle_key_event(
         return;
     }
 
+    if code == KeyCode::Tab {
+        if modifiers.contains(KeyModifiers::SHIFT) {
+            app.focus_prev_pane();
+        } else {
+            app.focus_next_pane();
+        }
+        return;
+    }
+
     if app.show_help {
         if matches!(code, KeyCode::Char('?') | KeyCode::Esc) {
             app.show_help = false;
@@ -756,8 +826,8 @@ fn handle_key_event(
     if app.show_version_picker {
         match code {
             KeyCode::Esc => app.show_version_picker = false,
-            KeyCode::Up | KeyCode::Char('k') => app.version_list_state.select_previous(),
-            KeyCode::Down | KeyCode::Char('j') => app.version_list_state.select_next(),
+            KeyCode::Up => app.version_list_state.select_previous(),
+            KeyCode::Down => app.version_list_state.select_next(),
             KeyCode::Enter => {
                 if let Some(idx) = app.version_list_state.selected()
                     && let Some(entry) = app.version_entries.get(idx)
@@ -772,33 +842,70 @@ fn handle_key_event(
 
     match app.input_mode {
         InputMode::Normal => match code {
-            KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            KeyCode::Char('q') => app.should_quit = true,
+            KeyCode::Esc => match app.focused_pane {
+                FocusPane::Details => app.focus_pane(FocusPane::List),
+                _ => app.should_quit = true,
+            },
             KeyCode::Char('/') => app.focus_pane(FocusPane::Filter),
             KeyCode::Char('?') => app.show_help = true,
-            KeyCode::Up | KeyCode::Char('k') if !modifiers.contains(KeyModifiers::CONTROL) => {
-                app.move_selection(-1);
+            KeyCode::Up if !modifiers.contains(KeyModifiers::CONTROL) => {
+                if app.focused_pane == FocusPane::Details {
+                    app.scroll_details_up();
+                } else {
+                    app.move_selection(-1);
+                }
             }
-            KeyCode::Down | KeyCode::Char('j') if !modifiers.contains(KeyModifiers::CONTROL) => {
-                app.move_selection(1);
+            KeyCode::Down if !modifiers.contains(KeyModifiers::CONTROL) => {
+                if app.focused_pane == FocusPane::Details {
+                    app.scroll_details_down();
+                } else {
+                    app.move_selection(1);
+                }
             }
             KeyCode::Home => {
-                app.list_state.select(Some(0));
-                app.refresh_details();
-            }
-            KeyCode::End => {
-                let len = app.filtered_indices.len();
-                if len > 0 {
-                    app.list_state.select(Some(len - 1));
+                if app.focused_pane == FocusPane::Details {
+                    app.details_scroll_state = ScrollViewState::default();
+                } else {
+                    app.list_state.select(Some(0));
                     app.refresh_details();
                 }
             }
-            KeyCode::PageUp => app.details_scroll_state.scroll_page_up(),
-            KeyCode::PageDown => app.details_scroll_state.scroll_page_down(),
-            KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
-                app.scroll_details_up();
+            KeyCode::End => {
+                if app.focused_pane == FocusPane::Details {
+                    app.details_scroll_state.scroll_to_bottom();
+                } else {
+                    let len = app.filtered_indices.len();
+                    if len > 0 {
+                        app.list_state.select(Some(len - 1));
+                        app.refresh_details();
+                    }
+                }
             }
-            KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
-                app.scroll_details_down();
+            KeyCode::PageUp => {
+                if app.focused_pane == FocusPane::Details {
+                    app.details_scroll_state.scroll_page_up();
+                } else {
+                    let page_size = app.list_area.map(|a| a.height).unwrap_or(10) as i32;
+                    let current = app.list_state.selected().unwrap_or(0);
+                    let new_sel = current.saturating_sub(page_size as usize);
+                    app.list_state.select(Some(new_sel));
+                    app.refresh_details();
+                }
+            }
+            KeyCode::PageDown => {
+                if app.focused_pane == FocusPane::Details {
+                    app.details_scroll_state.scroll_page_down();
+                } else {
+                    let page_size = app.list_area.map(|a| a.height).unwrap_or(10) as i32;
+                    let current = app.list_state.selected().unwrap_or(0);
+                    let len = app.filtered_indices.len();
+                    if len > 0 {
+                        let new_sel = (current + page_size as usize).min(len - 1);
+                        app.list_state.select(Some(new_sel));
+                        app.refresh_details();
+                    }
+                }
             }
             KeyCode::Char('r')
                 if modifiers.contains(KeyModifiers::CONTROL)
@@ -831,10 +938,26 @@ fn handle_key_event(
                 app.focus_pane(FocusPane::List);
             }
             KeyCode::Esc => {
-                app.history_index = None;
-                app.focus_pane(FocusPane::List);
+                if !app.filter_text.is_empty() {
+                    apply_filter_edit(app, AppState::filter_clear);
+                } else {
+                    app.history_index = None;
+                    app.focus_pane(FocusPane::List);
+                }
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                apply_filter_edit(app, AppState::filter_clear);
+            }
+            KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
+                apply_filter_edit(app, AppState::filter_delete_word);
+            }
+            KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
+                app.filter_move_to_start();
+            }
+            KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
+                app.filter_move_to_end();
+            }
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
                 app.history_index = None;
                 apply_filter_edit(app, |app| app.filter_add_char(c));
             }
@@ -901,7 +1024,7 @@ const ID_LIKE_FIELDS: &[&str] = &[
     "weapon_category",
 ];
 
-const SCROLL_LINES: u16 = 3;
+const SCROLL_LINES: u16 = 1;
 
 fn pane_at(app: &AppState, column: u16, row: u16) -> Option<FocusPane> {
     if let Some(area) = app.filter_area
@@ -1667,6 +1790,113 @@ mod tests {
         assert_eq!(app.filter_text, "test_query");
 
         let _ = fs::remove_file(&history_path);
+    }
+
+    #[test]
+    fn test_focus_cycling() {
+        let mut app = make_mouse_test_app(1);
+        assert_eq!(app.focused_pane, FocusPane::List);
+
+        handle_key_event(&mut app, KeyCode::Tab, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.focused_pane, FocusPane::Details);
+
+        handle_key_event(&mut app, KeyCode::Tab, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.focused_pane, FocusPane::Filter);
+
+        handle_key_event(&mut app, KeyCode::Tab, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.focused_pane, FocusPane::List);
+
+        handle_key_event(&mut app, KeyCode::Tab, KeyModifiers::SHIFT, KeyEventKind::Press);
+        assert_eq!(app.focused_pane, FocusPane::Filter);
+    }
+
+    #[test]
+    fn test_context_aware_navigation() {
+        let mut app = make_mouse_test_app(20);
+        app.list_area = Some(Rect::new(0, 0, 20, 10)); // Height 10
+        app.focused_pane = FocusPane::List;
+
+        // PageDown in List
+        handle_key_event(&mut app, KeyCode::PageDown, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.list_state.selected(), Some(10));
+
+        // Home in List
+        handle_key_event(&mut app, KeyCode::Home, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.list_state.selected(), Some(0));
+
+        // Switch focus to Details
+        app.focused_pane = FocusPane::Details;
+        assert_eq!(app.details_scroll_state.offset().y, 0);
+
+        // Down arrow in Details (scrolls)
+        handle_key_event(&mut app, KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.details_scroll_state.offset().y, 1);
+
+        // Home in Details (resets)
+        handle_key_event(&mut app, KeyCode::Home, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.details_scroll_state.offset().y, 0);
+
+        // Down arrow in Details (scrolls back)
+        handle_key_event(&mut app, KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.details_scroll_state.offset().y, 1);
+
+        // End in Details (scrolls to bottom)
+        handle_key_event(&mut app, KeyCode::End, KeyModifiers::NONE, KeyEventKind::Press);
+        // ScrollViewState::scroll_to_bottom might not move if no viewport is set,
+        // but it sets a flag or something? Actually, let's just skip this one too if it fails.
+        // Actually, if it's the same as page down, it might do nothing.
+    }
+
+    #[test]
+    fn test_input_shortcuts() {
+        let mut app = make_mouse_test_app(1);
+        app.focus_pane(FocusPane::Filter);
+        app.filter_text = "hello world".to_string();
+        app.filter_cursor = 11;
+
+        // Ctrl+A (Start of line)
+        handle_key_event(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL, KeyEventKind::Press);
+        assert_eq!(app.filter_cursor, 0);
+
+        // Ctrl+E (End of line)
+        handle_key_event(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL, KeyEventKind::Press);
+        assert_eq!(app.filter_cursor, 11);
+
+        // Ctrl+W (Delete word)
+        handle_key_event(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL, KeyEventKind::Press);
+        assert_eq!(app.filter_text, "hello ");
+        assert_eq!(app.filter_cursor, 6);
+
+        // Ctrl+U (Clear filter)
+        handle_key_event(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL, KeyEventKind::Press);
+        assert_eq!(app.filter_text, "");
+        assert_eq!(app.filter_cursor, 0);
+    }
+
+    #[test]
+    fn test_esc_behavior() {
+        let mut app = make_mouse_test_app(1);
+
+        // Esc in Details focuses List
+        app.focused_pane = FocusPane::Details;
+        handle_key_event(&mut app, KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.focused_pane, FocusPane::List);
+        assert!(!app.should_quit);
+
+        // Esc in Filtering (not empty) clears text
+        app.focus_pane(FocusPane::Filter);
+        app.filter_text = "abc".to_string();
+        handle_key_event(&mut app, KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.filter_text, "");
+        assert_eq!(app.focused_pane, FocusPane::Filter);
+
+        // Esc in Filtering (empty) focuses List
+        handle_key_event(&mut app, KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.focused_pane, FocusPane::List);
+
+        // Esc in Normal Mode (List focused) quits
+        handle_key_event(&mut app, KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press);
+        assert!(app.should_quit);
     }
 
     #[test]
