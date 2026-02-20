@@ -221,9 +221,6 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
             if app.details_wrapped_width != content_width {
                 app.details_wrapped_annotated =
                     wrap_annotated_lines(&app.details_annotated, content_width);
-                // Borrow instead of clone — no allocation
-                app.details_wrapped_text =
-                    annotated_to_text(&app.details_wrapped_annotated, app.hovered_span_id);
                 app.details_wrapped_width = content_width;
             }
 
@@ -238,10 +235,8 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
             scroll_view.buf_mut().set_style(scroll_area, app.theme.text);
 
             let content_rect = Rect::new(0, 0, content_width, content_height);
-            scroll_view.render_widget(
-                Paragraph::new(app.details_wrapped_text.clone()).style(app.theme.text),
-                content_rect,
-            );
+            let text = annotated_to_text(&app.details_wrapped_annotated, app.hovered_span_id);
+            scroll_view.render_widget(Paragraph::new(text).style(app.theme.text), content_rect);
 
             // Render ScrollView centered horizontally within content_area using the padding
             let scroll_view_area = Rect::new(
@@ -791,10 +786,10 @@ fn name_value(value: &Value) -> Option<String> {
 /// Returns a Text object for ratatui rendering.
 /// Converts a matrix of AnnotatedSpans into a ratatui Text object.
 /// Takes a borrow so callers avoid an expensive clone of the full buffer.
-pub fn annotated_to_text(
-    annotated: &[Vec<AnnotatedSpan>],
+pub fn annotated_to_text<'a>(
+    annotated: &'a [Vec<AnnotatedSpan>],
     hovered_span_id: Option<usize>,
-) -> Text<'static> {
+) -> Text<'a> {
     Text::from(
         annotated
             .iter()
@@ -802,11 +797,11 @@ pub fn annotated_to_text(
                 Line::from(
                     line.iter()
                         .map(|as_| {
-                            let mut span = as_.span.clone();
+                            let mut style = as_.span.style;
                             if hovered_span_id.is_some() && as_.span_id == hovered_span_id {
-                                span.style = span.style.add_modifier(Modifier::UNDERLINED);
+                                style = style.add_modifier(Modifier::UNDERLINED);
                             }
-                            span
+                            Span::styled(as_.span.content.as_ref(), style)
                         })
                         .collect::<Vec<_>>(),
                 )

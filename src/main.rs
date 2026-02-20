@@ -145,8 +145,6 @@ pub struct AppState {
     pub details_annotated: Vec<Vec<ui::AnnotatedSpan>>,
     /// Pre-wrapped annotated spans for the current content_width (used for rendering and hit-testing)
     pub details_wrapped_annotated: Vec<Vec<ui::AnnotatedSpan>>,
-    /// Cached Text object for the current details_wrapped_annotated
-    pub details_wrapped_text: ratatui::text::Text<'static>,
     /// Width used for current details_wrapped_annotated
     pub details_wrapped_width: u16,
     /// Currently hovered span ID for tracking click/hover
@@ -253,7 +251,6 @@ impl AppState {
             details_scroll_state: ScrollViewState::default(),
             details_annotated: Vec::new(),
             details_wrapped_annotated: Vec::new(),
-            details_wrapped_text: ratatui::text::Text::default(),
             details_wrapped_width: 0,
             hovered_span_id: None,
             details_content_area: None,
@@ -357,7 +354,6 @@ impl AppState {
         // Invalidate wrapped cache so render_details re-wraps for the new content.
         self.details_wrapped_width = 0;
         self.details_wrapped_annotated.clear();
-        self.details_wrapped_text = ratatui::text::Text::default();
     }
 
     /// Clamps the current list selection to valid bounds.
@@ -958,9 +954,6 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
     ) && app.hovered_span_id != new_hover_id
     {
         app.hovered_span_id = new_hover_id;
-        // Borrow instead of clone — eliminates O(spans) allocation on every mouse-move
-        app.details_wrapped_text =
-            ui::annotated_to_text(&app.details_wrapped_annotated, app.hovered_span_id);
         transitioned = true;
     }
 
