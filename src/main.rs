@@ -193,6 +193,9 @@ pub struct AppState {
     pub source_dir: Option<String>,
     /// Warnings accumulated during source loading
     pub source_warnings: Vec<String>,
+    /// Index into indexed_items that is currently rendered in the details pane.
+    /// Used to skip expensive JSON re-rendering when the same item is re-selected.
+    cached_details_item_idx: Option<usize>,
 }
 
 impl AppState {
@@ -267,6 +270,7 @@ impl AppState {
             pending_action: None,
             source_dir,
             source_warnings: Vec::new(),
+            cached_details_item_idx: None,
         };
         app.load_history();
         app.refresh_details();
@@ -292,6 +296,23 @@ impl AppState {
     }
 
     fn refresh_details(&mut self) {
+        // Resolve the indexed_items index for the current selection.
+        let selected_item_idx = self
+            .list_state
+            .selected()
+            .and_then(|sel| self.filtered_indices.get(sel).copied());
+
+        // Always reset scroll so navigation feels snappy.
+        self.details_scroll_state = ScrollViewState::default();
+
+        // Skip the expensive serde_json::to_string_pretty + highlight pass when
+        // the same item is already rendered. The wrapped cache is kept intact so
+        // the width-change guard in render_details still triggers a re-wrap on resize.
+        if self.cached_details_item_idx == selected_item_idx && selected_item_idx.is_some() {
+            return;
+        }
+        self.cached_details_item_idx = selected_item_idx;
+
         if let Some((json, _, _)) = self.get_selected_item() {
             match serde_json::to_string_pretty(json) {
                 Ok(json_str) => {
@@ -315,7 +336,7 @@ impl AppState {
                 span_id: None,
             }]];
         }
-        self.details_scroll_state = ScrollViewState::default();
+        // Invalidate wrapped cache so render_details re-wraps for the new content.
         self.details_wrapped_width = 0;
         self.details_wrapped_annotated.clear();
         self.details_wrapped_text = ratatui::text::Text::default();
@@ -465,6 +486,8 @@ impl AppState {
         self.search_index = search_index;
         self.id_set = id_set;
         self.total_items = total_items;
+        // New dataset means all item indices are stale — force a re-render.
+        self.cached_details_item_idx = None;
         self.index_time_ms = index_time_ms;
         self.game_version = game_version;
         self.game_version_key = game_version_key;
