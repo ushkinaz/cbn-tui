@@ -76,6 +76,13 @@ pub enum InputMode {
     Filtering,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusPane {
+    List,
+    Details,
+    Filter,
+}
+
 #[derive(Debug, Clone)]
 pub struct VersionEntry {
     pub label: String,
@@ -115,6 +122,8 @@ pub struct AppState {
     pub filter_cursor: usize,
     /// Current input mode
     pub input_mode: InputMode,
+    /// Which pane currently has keyboard focus
+    pub focused_pane: FocusPane,
     /// Theme configuration
     pub theme: theme::ThemeConfig,
     /// Resolved game version (from JSON tag_name)
@@ -144,6 +153,16 @@ pub struct AppState {
     pub hovered_span_id: Option<usize>,
     /// Screen region of the JSON content area (set during render)
     pub details_content_area: Option<ratatui::layout::Rect>,
+    /// Screen region of the item list pane (including borders)
+    pub list_area: Option<ratatui::layout::Rect>,
+    /// Screen region of list content (inside borders)
+    pub list_content_area: Option<ratatui::layout::Rect>,
+    /// Screen region of the details pane (including borders)
+    pub details_area: Option<ratatui::layout::Rect>,
+    /// Screen region of the filter pane (including borders)
+    pub filter_area: Option<ratatui::layout::Rect>,
+    /// Screen region of the filter text area (inside borders)
+    pub filter_input_area: Option<ratatui::layout::Rect>,
     /// Flag to quit app
     pub should_quit: bool,
     /// Whether help overlay is visible
@@ -213,6 +232,7 @@ impl AppState {
             filter_text: String::new(),
             filter_cursor: 0,
             input_mode: InputMode::Normal,
+            focused_pane: FocusPane::List,
             theme,
             game_version,
             game_version_key,
@@ -227,6 +247,11 @@ impl AppState {
             details_wrapped_width: 0,
             hovered_span_id: None,
             details_content_area: None,
+            list_area: None,
+            list_content_area: None,
+            details_area: None,
+            filter_area: None,
+            filter_input_area: None,
             should_quit: false,
             show_help: false,
             show_version_picker: false,
@@ -337,6 +362,16 @@ impl AppState {
         self.details_scroll_state.scroll_down();
     }
 
+    fn scroll_details_by_lines(&mut self, lines: u16, down: bool) {
+        for _ in 0..lines {
+            if down {
+                self.scroll_details_down();
+            } else {
+                self.scroll_details_up();
+            }
+        }
+    }
+
     fn filter_add_char(&mut self, c: char) {
         let byte_idx = self
             .filter_text
@@ -385,6 +420,15 @@ impl AppState {
 
     fn filter_move_to_end(&mut self) {
         self.filter_cursor = self.filter_text.chars().count();
+    }
+
+    fn focus_pane(&mut self, pane: FocusPane) {
+        self.focused_pane = pane;
+        self.input_mode = if pane == FocusPane::Filter {
+            InputMode::Filtering
+        } else {
+            InputMode::Normal
+        };
     }
 
     fn update_filter(&mut self) {
@@ -632,7 +676,7 @@ fn handle_key_event(
     if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('g') {
         app.show_help = false;
         app.show_version_picker = false;
-        app.input_mode = InputMode::Normal;
+        app.focus_pane(FocusPane::List);
         app.history_index = None;
         app.pending_action = Some(AppAction::OpenVersionPicker);
         return;
@@ -674,7 +718,7 @@ fn handle_key_event(
     match app.input_mode {
         InputMode::Normal => match code {
             KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
-            KeyCode::Char('/') => app.input_mode = InputMode::Filtering,
+            KeyCode::Char('/') => app.focus_pane(FocusPane::Filter),
             KeyCode::Char('?') => app.show_help = true,
             KeyCode::Up | KeyCode::Char('k') if !modifiers.contains(KeyModifiers::CONTROL) => {
                 app.move_selection(-1);
@@ -714,7 +758,7 @@ fn handle_key_event(
                     && !modifiers.contains(KeyModifiers::CONTROL)
                     && !modifiers.contains(KeyModifiers::ALT) =>
             {
-                app.input_mode = InputMode::Filtering;
+                app.focus_pane(FocusPane::Filter);
                 app.filter_move_to_end();
                 apply_filter_edit(app, |app| app.filter_add_char(c));
             }
@@ -729,11 +773,11 @@ fn handle_key_event(
                     app.save_history();
                 }
                 app.history_index = None;
-                app.input_mode = InputMode::Normal;
+                app.focus_pane(FocusPane::List);
             }
             KeyCode::Esc => {
                 app.history_index = None;
-                app.input_mode = InputMode::Normal;
+                app.focus_pane(FocusPane::List);
             }
             KeyCode::Char(c) => {
                 app.history_index = None;
@@ -802,7 +846,33 @@ const ID_LIKE_FIELDS: &[&str] = &[
     "weapon_category",
 ];
 
+const SCROLL_LINES: u16 = 3;
+
+fn rect_contains(area: ratatui::layout::Rect, column: u16, row: u16) -> bool {
+    column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height
+}
+
+fn pane_at(app: &AppState, column: u16, row: u16) -> Option<FocusPane> {
+    if let Some(area) = app.filter_area
+        && rect_contains(area, column, row)
+    {
+        return Some(FocusPane::Filter);
+    }
+    if let Some(area) = app.list_area
+        && rect_contains(area, column, row)
+    {
+        return Some(FocusPane::List);
+    }
+    if let Some(area) = app.details_area
+        && rect_contains(area, column, row)
+    {
+        return Some(FocusPane::Details);
+    }
+    None
+}
+
 fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
+    let hovered_pane = pane_at(app, mouse.column, mouse.row);
     let mut is_valid_target = false;
     let mut new_hover_id = None;
     let mut target_path = String::new();
@@ -836,6 +906,81 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
         app.details_wrapped_text =
             ui::annotated_to_text(app.details_wrapped_annotated.clone(), app.hovered_span_id);
         transitioned = true;
+    }
+
+    if matches!(
+        mouse.kind,
+        event::MouseEventKind::ScrollUp | event::MouseEventKind::ScrollDown
+    ) {
+        let scroll_down = matches!(mouse.kind, event::MouseEventKind::ScrollDown);
+        if let Some(pane) = hovered_pane {
+            match pane {
+                FocusPane::List => {
+                    if !app.filtered_indices.is_empty() {
+                        for _ in 0..SCROLL_LINES {
+                            app.move_selection(if scroll_down { 1 } else { -1 });
+                        }
+                        transitioned = true;
+                    }
+                }
+                FocusPane::Details => {
+                    app.scroll_details_by_lines(SCROLL_LINES, scroll_down);
+                    transitioned = true;
+                }
+                FocusPane::Filter => {}
+            }
+        }
+    }
+
+    if matches!(
+        mouse.kind,
+        event::MouseEventKind::Down(event::MouseButton::Left)
+    ) {
+        if let Some(pane) = hovered_pane {
+            let previous_focus = app.focused_pane;
+            let previous_mode = app.input_mode;
+            app.focus_pane(pane);
+            if app.focused_pane != previous_focus || app.input_mode != previous_mode {
+                transitioned = true;
+            }
+        }
+    }
+
+    if matches!(
+        mouse.kind,
+        event::MouseEventKind::Down(event::MouseButton::Left)
+    ) {
+        if hovered_pane == Some(FocusPane::List)
+            && let Some(content_area) = app.list_content_area
+            && rect_contains(content_area, mouse.column, mouse.row)
+            && !app.filtered_indices.is_empty()
+        {
+            let row = mouse.row.saturating_sub(content_area.y) as usize;
+            if row < content_area.height as usize {
+                let top_index = app.list_state.offset();
+                let clicked = (top_index + row).min(app.filtered_indices.len() - 1);
+                if app.list_state.selected() != Some(clicked) {
+                    app.list_state.select(Some(clicked));
+                    app.refresh_details();
+                    transitioned = true;
+                }
+            }
+        }
+
+        if hovered_pane == Some(FocusPane::Filter)
+            && let Some(input_area) = app.filter_input_area
+            && rect_contains(input_area, mouse.column, mouse.row)
+        {
+            let horizontal_scroll =
+                ui::filter_horizontal_scroll(&app.filter_text, app.filter_cursor, input_area.width);
+            let local_x = mouse.column.saturating_sub(input_area.x);
+            let target_column = horizontal_scroll + local_x;
+            let new_cursor = ui::filter_cursor_for_column(&app.filter_text, target_column);
+            if new_cursor != app.filter_cursor {
+                app.filter_cursor = new_cursor;
+                transitioned = true;
+            }
+        }
     }
 
     if matches!(
@@ -874,7 +1019,7 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
             app.filter_text = format!("i:{}", final_val);
             app.filter_cursor = app.filter_text.chars().count();
             app.update_filter();
-            app.input_mode = InputMode::Normal;
+            app.focus_pane(FocusPane::Details);
         } else {
             let filter_addition = format!("{}:{}", target_path, final_val);
             let current = app.filter_text.trim();
@@ -885,7 +1030,7 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
             }
             app.filter_cursor = app.filter_text.chars().count();
             app.update_filter();
-            app.input_mode = InputMode::Filtering;
+            app.focus_pane(FocusPane::Filter);
         }
 
         transitioned = true;
@@ -1214,6 +1359,8 @@ fn progress_ratio(progress: data::DownloadProgress) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
     use serde_json::json;
 
     #[test]
@@ -1553,5 +1700,144 @@ mod tests {
         assert!(app.id_set.contains("base_rifle"));
         assert!(app.id_set.contains("other"));
         assert_eq!(app.id_set.len(), 2);
+    }
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn make_mouse_test_app(items: usize) -> AppState {
+        let indexed_items = (0..items)
+            .map(|i| {
+                let id = format!("item_{}", i);
+                (json!({"id": id}), id, "t".to_string())
+            })
+            .collect::<Vec<_>>();
+        let search_index = search_index::SearchIndex::build(&indexed_items);
+        AppState::new(
+            indexed_items,
+            search_index,
+            theme::Theme::Dracula.config(),
+            "v1".to_string(),
+            "v1".to_string(),
+            "v1".to_string(),
+            false,
+            items,
+            0.0,
+            std::path::PathBuf::from("/tmp/h.txt"),
+        )
+    }
+
+    #[test]
+    fn test_mouse_click_list_selects_item_and_focuses_list() {
+        let mut app = make_mouse_test_app(8);
+        app.list_area = Some(Rect::new(0, 0, 20, 8));
+        app.list_content_area = Some(Rect::new(1, 1, 18, 6));
+        app.details_area = Some(Rect::new(20, 0, 40, 8));
+        app.filter_area = Some(Rect::new(0, 8, 60, 3));
+
+        let transitioned = handle_mouse_event(
+            &mut app,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 3, 3),
+        );
+
+        assert!(transitioned);
+        assert_eq!(app.focused_pane, FocusPane::List);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.list_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn test_mouse_click_filter_sets_caret_position() {
+        let mut app = make_mouse_test_app(1);
+        app.filter_text = "abcdef".to_string();
+        app.filter_cursor = app.filter_text.chars().count();
+        app.list_area = Some(Rect::new(0, 0, 20, 8));
+        app.details_area = Some(Rect::new(20, 0, 40, 8));
+        app.filter_area = Some(Rect::new(0, 8, 60, 3));
+        app.filter_input_area = Some(Rect::new(1, 9, 58, 1));
+
+        let transitioned = handle_mouse_event(
+            &mut app,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 3, 9),
+        );
+
+        assert!(transitioned);
+        assert_eq!(app.focused_pane, FocusPane::Filter);
+        assert_eq!(app.input_mode, InputMode::Filtering);
+        assert_eq!(app.filter_cursor, 2);
+    }
+
+    #[test]
+    fn test_mouse_click_filter_past_end_clamps_to_end() {
+        let mut app = make_mouse_test_app(1);
+        app.filter_text = "abc".to_string();
+        app.filter_cursor = 0;
+        app.list_area = Some(Rect::new(0, 0, 20, 8));
+        app.details_area = Some(Rect::new(20, 0, 40, 8));
+        app.filter_area = Some(Rect::new(0, 8, 30, 3));
+        app.filter_input_area = Some(Rect::new(1, 9, 28, 1));
+
+        let transitioned = handle_mouse_event(
+            &mut app,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 20, 9),
+        );
+
+        assert!(transitioned);
+        assert_eq!(app.filter_cursor, app.filter_text.chars().count());
+    }
+
+    #[test]
+    fn test_mouse_scroll_hovered_list_moves_by_constant() {
+        let mut app = make_mouse_test_app(10);
+        app.list_area = Some(Rect::new(0, 0, 20, 10));
+        app.list_content_area = Some(Rect::new(1, 1, 18, 8));
+
+        let transitioned =
+            handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 2, 2));
+
+        assert!(transitioned);
+        assert_eq!(app.list_state.selected(), Some(SCROLL_LINES as usize));
+        assert_eq!(app.focused_pane, FocusPane::List);
+    }
+
+    #[test]
+    fn test_mouse_scroll_hovered_details_moves_by_constant() {
+        let mut app = make_mouse_test_app(1);
+        app.details_area = Some(Rect::new(20, 0, 40, 10));
+
+        let transitioned =
+            handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 25, 1));
+
+        assert!(transitioned);
+        assert_eq!(app.details_scroll_state.offset().y, SCROLL_LINES);
+    }
+
+    #[test]
+    fn test_mouse_click_details_focuses_even_without_link() {
+        let mut app = make_mouse_test_app(1);
+        let style = theme::Theme::Dracula.config().json_style;
+        let annotated = ui::highlight_json_annotated(r#""id": 1"#, &style);
+        app.details_wrapped_annotated = ui::wrap_annotated_lines(&annotated, 20);
+        app.details_area = Some(Rect::new(20, 0, 40, 10));
+        app.details_content_area = Some(Rect::new(20, 0, 40, 10));
+        app.filter_text = "x".to_string();
+        app.filter_cursor = 1;
+        app.focused_pane = FocusPane::List;
+        app.input_mode = InputMode::Normal;
+
+        let transitioned = handle_mouse_event(
+            &mut app,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 22, 0),
+        );
+
+        assert!(transitioned);
+        assert_eq!(app.focused_pane, FocusPane::Details);
+        assert_eq!(app.filter_text, "x");
     }
 }
