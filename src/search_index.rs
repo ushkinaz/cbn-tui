@@ -1,5 +1,6 @@
 use foldhash::{HashMap, HashSet};
 use serde_json::Value;
+use crate::data::IndexedItem;
 
 /// Inverted index for fast search across 30k+ items
 /// Indexes common fields (id/abstract, type, category) and tokenized words
@@ -32,10 +33,14 @@ impl SearchIndex {
     /// 1. Avoiding redundant tokenization of fields already in the raw JSON.
     /// 2. Avoiding `to_lowercase()` for words that are already lowercase.
     /// 3. Using `foldhash` for faster hashing performance.
-    pub fn build(items: &[(Value, String, String)]) -> Self {
+    pub fn build(items: &[IndexedItem]) -> Self {
         let mut index = Self::new();
 
-        for (idx, (json, id, type_)) in items.iter().enumerate() {
+        for (idx, item) in items.iter().enumerate() {
+            let json = &item.value;
+            let id = &item.id;
+            let type_ = &item.item_type;
+
             // Index primary search fields
             if !id.is_empty() {
                 index
@@ -75,14 +80,18 @@ impl SearchIndex {
         index
     }
 
-    pub fn build_with_progress<F>(items: &[(Value, String, String)], mut on_progress: F) -> Self
+    pub fn build_with_progress<F>(items: &[IndexedItem], mut on_progress: F) -> Self
     where
         F: FnMut(usize, usize),
     {
         let mut index = Self::new();
         let total = items.len();
 
-        for (idx, (json, id, type_)) in items.iter().enumerate() {
+        for (idx, item) in items.iter().enumerate() {
+            let json = &item.value;
+            let id = &item.id;
+            let type_ = &item.item_type;
+
             if !id.is_empty() {
                 index
                     .by_id
@@ -219,16 +228,16 @@ mod tests {
     #[test]
     fn test_index_building() {
         let items = vec![
-            (
-                json!({"id": "test_item", "type": "TOOL", "category": "weapons"}),
-                "test_item".to_string(),
-                "TOOL".to_string(),
-            ),
-            (
-                json!({"abstract": "abstract_base", "type": "MONSTER"}),
-                "".to_string(),
-                "MONSTER".to_string(),
-            ),
+            IndexedItem {
+                value: json!({"id": "test_item", "type": "TOOL", "category": "weapons"}),
+                id: "test_item".to_string(),
+                item_type: "TOOL".to_string(),
+            },
+            IndexedItem {
+                value: json!({"abstract": "abstract_base", "type": "MONSTER"}),
+                id: "".to_string(),
+                item_type: "MONSTER".to_string(),
+            },
         ];
 
         let index = SearchIndex::build(&items);
@@ -256,16 +265,16 @@ mod tests {
     #[test]
     fn test_lookup_exact() {
         let items = vec![
-            (
-                json!({"id": "test_item", "type": "TOOL"}),
-                "test_item".to_string(),
-                "TOOL".to_string(),
-            ),
-            (
-                json!({"id": "test_weapon", "type": "TOOL"}),
-                "test_weapon".to_string(),
-                "TOOL".to_string(),
-            ),
+            IndexedItem {
+                value: json!({"id": "test_item", "type": "TOOL"}),
+                id: "test_item".to_string(),
+                item_type: "TOOL".to_string(),
+            },
+            IndexedItem {
+                value: json!({"id": "test_weapon", "type": "TOOL"}),
+                id: "test_weapon".to_string(),
+                item_type: "TOOL".to_string(),
+            },
         ];
 
         let index = SearchIndex::build(&items);
@@ -279,16 +288,16 @@ mod tests {
     #[test]
     fn test_lookup_pattern() {
         let items = vec![
-            (
-                json!({"id": "test_item", "type": "TOOL"}),
-                "test_item".to_string(),
-                "TOOL".to_string(),
-            ),
-            (
-                json!({"id": "test_weapon", "type": "TOOL"}),
-                "test_weapon".to_string(),
-                "TOOL".to_string(),
-            ),
+            IndexedItem {
+                value: json!({"id": "test_item", "type": "TOOL"}),
+                id: "test_item".to_string(),
+                item_type: "TOOL".to_string(),
+            },
+            IndexedItem {
+                value: json!({"id": "test_weapon", "type": "TOOL"}),
+                id: "test_weapon".to_string(),
+                item_type: "TOOL".to_string(),
+            },
         ];
 
         let index = SearchIndex::build(&items);
@@ -300,11 +309,11 @@ mod tests {
 
     #[test]
     fn test_word_search() {
-        let items = vec![(
-            json!({"id": "zombie_soldier", "type": "MONSTER", "name": "Zombie Soldier"}),
-            "zombie_soldier".to_string(),
-            "MONSTER".to_string(),
-        )];
+        let items = vec![IndexedItem {
+            value: json!({"id": "zombie_soldier", "type": "MONSTER", "name": "Zombie Soldier"}),
+            id: "zombie_soldier".to_string(),
+            item_type: "MONSTER".to_string(),
+        }];
 
         let index = SearchIndex::build(&items);
 

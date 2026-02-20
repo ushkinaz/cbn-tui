@@ -174,9 +174,9 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
         .borders(Borders::ALL)
         .style(
             if is_focused {
-                app.theme.border_selected
-            } else {
-                app.theme.border
+            app.theme.border_selected
+        } else {
+            app.theme.border
             }
             .bg(app.theme.background),
         )
@@ -255,9 +255,12 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
 /// Uses a two-column layout with 50% width each.
 /// Returns the height occupied by the header (always 2).
 fn render_metadata_header(f: &mut Frame, app: &mut AppState, area: Rect) -> u16 {
-    let Some((json, id, type_)) = app.get_selected_item() else {
+    let Some(item) = app.get_selected_item() else {
         return 0;
     };
+    let json = &item.value;
+    let id = &item.id;
+    let type_ = &item.item_type;
 
     let id_val = if !id.is_empty() {
         id.as_str()
@@ -1462,7 +1465,11 @@ mod tests {
 
     fn create_test_app() -> crate::AppState {
         use serde_json::json;
-        let indexed_items = vec![(json!({"id": "1"}), "1".to_string(), "t".to_string())];
+        let indexed_items = vec![crate::data::IndexedItem {
+            value: json!({"id": "1"}),
+            id: "1".to_string(),
+            item_type: "t".to_string(),
+        }];
         let search_index = crate::search_index::SearchIndex::build(&indexed_items);
         let theme = crate::theme::Theme::Dracula.config();
         crate::AppState::new(

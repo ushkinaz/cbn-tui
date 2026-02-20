@@ -19,6 +19,17 @@ pub struct BuildInfo {
     pub created_at: String,
 }
 
+/// Represents an indexed item holding its original value and resolved primary fields.
+#[derive(Debug, Clone)]
+pub struct IndexedItem {
+    /// The actual JSON data of the item.
+    pub value: Value,
+    /// The resolved string ID of the item.
+    pub id: String,
+    /// The resolved type string of the item.
+    pub item_type: String,
+}
+
 /// The root structure of the game data JSON (`all.json`).
 #[derive(Debug, Deserialize)]
 pub struct Root {

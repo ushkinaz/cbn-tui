@@ -244,15 +244,15 @@ fn matches_field_parts(json: &Value, parts: &[&str], pattern: &str, exact: bool)
 /// Fast indexed search for items
 /// Uses inverted index for common fields, falls back to recursive for nested fields
 /// Returns indices of matching items
-pub fn search_with_index(
-    index: &crate::search_index::SearchIndex,
-    items: &[(Value, String, String)],
+pub fn find_matches(
     query: &str,
+    items: &[crate::data::IndexedItem],
+    search_index: &crate::search_index::SearchIndex,
 ) -> Vec<usize> {
     use foldhash::HashSet;
 
     if query.is_empty() {
-        return (0..items.len()).collect();
+        return collect_all_indices(items);
     }
 
     // Parse all search terms at once (not per item)
@@ -271,17 +271,17 @@ pub fn search_with_index(
                 "id" | "abstract" | "i" => {
                     // Fast path - use id index (includes abstract)
                     // Support both "id:" and shortcut "i:"
-                    index.lookup_field(&index.by_id, &term.pattern, term.exact)
+                    search_index.lookup_field(&search_index.by_id, &term.pattern, term.exact)
                 }
                 "type" | "t" => {
                     // Fast path - use type index
                     // Support both "type:" and shortcut "t:"
-                    index.lookup_field(&index.by_type, &term.pattern, term.exact)
+                    search_index.lookup_field(&search_index.by_type, &term.pattern, term.exact)
                 }
                 "category" | "c" => {
                     // Fast path - use category index
                     // Support both "category:" and shortcut "c:"
-                    index.lookup_field(&index.by_category, &term.pattern, term.exact)
+                    search_index.lookup_field(&search_index.by_category, &term.pattern, term.exact)
                 }
                 _ => {
                     // Nested field - fallback to recursive search
@@ -295,7 +295,7 @@ pub fn search_with_index(
                 slow_search_no_classifier(items, &term.pattern, true)
             } else {
                 // Pattern match - use word index
-                index.search_words(&term.pattern)
+                search_index.search_words(&term.pattern)
             }
         };
 
@@ -332,7 +332,7 @@ pub fn search_with_index(
 
 /// Slow path: recursive search with classifier for nested fields
 fn slow_search_classifier(
-    items: &[(Value, String, String)],
+    items: &[crate::data::IndexedItem],
     classifier: &str,
     pattern: &str,
     exact: bool,
@@ -351,14 +351,14 @@ fn slow_search_classifier(
     items
         .iter()
         .enumerate()
-        .filter(|(_, (json, _, _))| matches_field_parts(json, &parts, &pattern_owned, exact))
+        .filter(|(_, item)| matches_field_parts(&item.value, &parts, &pattern_owned, exact))
         .map(|(idx, _)| idx)
         .collect()
 }
 
 /// Slow path: recursive search without classifier
 fn slow_search_no_classifier(
-    items: &[(Value, String, String)],
+    items: &[crate::data::IndexedItem],
     pattern: &str,
     exact: bool,
 ) -> foldhash::HashSet<usize> {
@@ -373,9 +373,13 @@ fn slow_search_no_classifier(
     items
         .iter()
         .enumerate()
-        .filter(|(_, (json, _, _))| matches_value(json, &pattern_owned, exact))
+        .filter(|(_, item)| matches_value(&item.value, &pattern_owned, exact))
         .map(|(idx, _)| idx)
         .collect()
+}
+
+fn collect_all_indices(items: &[crate::data::IndexedItem]) -> Vec<usize> {
+    (0..items.len()).collect()
 }
 
 #[cfg(test)]
@@ -555,159 +559,159 @@ mod tests {
         assert!(!matches_field(&data, "str_", "30", false));
     }
 
-    // ========== Original matcher tests (refactored to use search_with_index) ==========
+    // ========== Original matcher tests (refactored to use find_matches) ==========
 
     #[test]
     fn test_search_simple_pattern() {
-        let items = vec![(
-            json!({"id": "f_alien_gasper", "flags": ["TRANSPARENT", "EMITTER", "MINEABLE"]}),
-            "f_alien_gasper".to_string(),
-            "furniture".to_string(),
-        )];
+        let items = vec![crate::data::IndexedItem {
+            value: json!({"id": "f_alien_gasper", "flags": ["TRANSPARENT", "EMITTER", "MINEABLE"]}),
+            id: "f_alien_gasper".to_string(),
+            item_type: "furniture".to_string(),
+        }];
         let index = crate::search_index::SearchIndex::build(&items);
 
-        assert!(!search_with_index(&index, &items, "EMITTER").is_empty());
-        assert!(!search_with_index(&index, &items, "EMITT").is_empty());
-        assert!(!search_with_index(&index, &items, "ITTER").is_empty());
+        assert!(!find_matches("EMITTER", &items, &index).is_empty());
+        assert!(!find_matches("EMITT", &items, &index).is_empty());
+        assert!(!find_matches("ITTER", &items, &index).is_empty());
     }
 
     #[test]
     fn test_search_exact_match() {
-        let items = vec![(
-            json!({"id": "f_alien_gasper", "flags": ["TRANSPARENT", "EMITTER", "MINEABLE"]}),
-            "f_alien_gasper".to_string(),
-            "furniture".to_string(),
-        )];
+        let items = vec![crate::data::IndexedItem {
+            value: json!({"id": "f_alien_gasper", "flags": ["TRANSPARENT", "EMITTER", "MINEABLE"]}),
+            id: "f_alien_gasper".to_string(),
+            item_type: "furniture".to_string(),
+        }];
         let index = crate::search_index::SearchIndex::build(&items);
 
         assert!(
-            search_with_index(&index, &items, "'EMITT'").is_empty(),
+            find_matches("'EMITT'", &items, &index).is_empty(),
             "'EMITT' should not match"
         );
         assert!(
-            !search_with_index(&index, &items, "'EMITTER'").is_empty(),
+            !find_matches("'EMITTER'", &items, &index).is_empty(),
             "'EMITTER' should match"
         );
     }
 
     #[test]
     fn test_search_classifier_exact_with_spaces() {
-        let items = vec![(
-            json!({"snippet": "exact phrase match"}),
-            "test".to_string(),
-            "item".to_string(),
-        )];
+        let items = vec![crate::data::IndexedItem {
+            value: json!({"snippet": "exact phrase match"}),
+            id: "test".to_string(),
+            item_type: "item".to_string(),
+        }];
         let index = crate::search_index::SearchIndex::build(&items);
 
         assert!(
-            !search_with_index(&index, &items, "snippet:'exact phrase match'").is_empty(),
+            !find_matches("snippet:'exact phrase match'", &items, &index).is_empty(),
             "Exact classifier query with spaces should match"
         );
     }
 
     #[test]
     fn test_search_classifier_exact_with_apostrophe() {
-        let items = vec![(
-            json!({"snippet": "You wouldn't buy a car"}),
-            "test".to_string(),
-            "item".to_string(),
-        )];
+        let items = vec![crate::data::IndexedItem {
+            value: json!({"snippet": "You wouldn't buy a car"}),
+            id: "test".to_string(),
+            item_type: "item".to_string(),
+        }];
         let index = crate::search_index::SearchIndex::build(&items);
 
         assert!(
-            !search_with_index(&index, &items, "snippet:'You wouldn't buy a car'").is_empty(),
+            !find_matches("snippet:'You wouldn't buy a car'", &items, &index).is_empty(),
             "Exact classifier query with apostrophe should match"
         );
     }
 
     #[test]
     fn test_search_classifier_exact_with_escaped_apostrophe() {
-        let items = vec![(
-            json!({"snippet": "You wouldn't buy a car"}),
-            "test".to_string(),
-            "item".to_string(),
-        )];
+        let items = vec![crate::data::IndexedItem {
+            value: json!({"snippet": "You wouldn't buy a car"}),
+            id: "test".to_string(),
+            item_type: "item".to_string(),
+        }];
         let index = crate::search_index::SearchIndex::build(&items);
 
         assert!(
-            !search_with_index(&index, &items, "snippet:'You wouldn\\'t buy a car'").is_empty(),
+            !find_matches("snippet:'You wouldn\\'t buy a car'", &items, &index).is_empty(),
             "Escaped apostrophe exact query should match"
         );
     }
 
     #[test]
     fn test_search_classifier() {
-        let items = vec![(
-            json!({"id": "f_alien_gasper", "type": "furniture"}),
-            "f_alien_gasper".to_string(),
-            "furniture".to_string(),
-        )];
+        let items = vec![crate::data::IndexedItem {
+            value: json!({"id": "f_alien_gasper", "type": "furniture"}),
+            id: "f_alien_gasper".to_string(),
+            item_type: "furniture".to_string(),
+        }];
         let index = crate::search_index::SearchIndex::build(&items);
 
-        assert!(!search_with_index(&index, &items, "id:f_alien").is_empty());
-        assert!(!search_with_index(&index, &items, "id:alien").is_empty());
+        assert!(!find_matches("id:f_alien", &items, &index).is_empty());
+        assert!(!find_matches("id:alien", &items, &index).is_empty());
         assert!(
-            search_with_index(&index, &items, "id:'f_alien'").is_empty(),
+            find_matches("id:'f_alien'", &items, &index).is_empty(),
             "Exact 'f_alien' should not match 'f_alien_gasper'"
         );
-        assert!(!search_with_index(&index, &items, "type:furniture").is_empty());
+        assert!(!find_matches("type:furniture", &items, &index).is_empty());
     }
 
     #[test]
     fn test_search_nested_field() {
-        let items = vec![(
-            json!({"bash": {"str_min": 30, "str_max": 60}}),
-            "test".to_string(),
-            "furniture".to_string(),
-        )];
+        let items = vec![crate::data::IndexedItem {
+            value: json!({"bash": {"str_min": 30, "str_max": 60}}),
+            id: "test".to_string(),
+            item_type: "furniture".to_string(),
+        }];
         let index = crate::search_index::SearchIndex::build(&items);
 
-        assert!(!search_with_index(&index, &items, "bash.str_min:30").is_empty());
+        assert!(!find_matches("bash.str_min:30", &items, &index).is_empty());
         assert!(
-            !search_with_index(&index, &items, "bash.str_min:3").is_empty(),
+            !find_matches("bash.str_min:3", &items, &index).is_empty(),
             "Pattern match should work"
         );
         // Exact match - number converts to string "30"
-        assert!(!search_with_index(&index, &items, "bash.str_min:'30'").is_empty());
+        assert!(!find_matches("bash.str_min:'30'", &items, &index).is_empty());
         assert!(
-            search_with_index(&index, &items, "bash.str_min:'3'").is_empty(),
+            find_matches("bash.str_min:'3'", &items, &index).is_empty(),
             "Exact '3' should not match '30'"
         );
     }
 
     #[test]
     fn test_search_invalid_classifier() {
-        let items = vec![(
-            json!({"bash": {"str_min": 30}}),
-            "test".to_string(),
-            "furniture".to_string(),
-        )];
+        let items = vec![crate::data::IndexedItem {
+            value: json!({"bash": {"str_min": 30}}),
+            id: "test".to_string(),
+            item_type: "furniture".to_string(),
+        }];
         let index = crate::search_index::SearchIndex::build(&items);
 
         assert!(
-            search_with_index(&index, &items, "str_:30").is_empty(),
+            find_matches("str_:30", &items, &index).is_empty(),
             "Invalid classifier should not match"
         );
     }
 
     #[test]
     fn test_search_and_logic() {
-        let items = vec![(
-            json!({"id": "f_alien_gasper", "flags": ["EMITTER"]}),
-            "f_alien_gasper".to_string(),
-            "furniture".to_string(),
-        )];
+        let items = vec![crate::data::IndexedItem {
+            value: json!({"id": "f_alien_gasper", "flags": ["EMITTER"]}),
+            id: "f_alien_gasper".to_string(),
+            item_type: "furniture".to_string(),
+        }];
         let index = crate::search_index::SearchIndex::build(&items);
 
-        assert!(!search_with_index(&index, &items, "id:f_alien EMITTER").is_empty());
-        assert!(search_with_index(&index, &items, "id:f_alien TRANSMIT").is_empty());
+        assert!(!find_matches("id:f_alien EMITTER", &items, &index).is_empty());
+        assert!(find_matches("id:f_alien TRANSMIT", &items, &index).is_empty());
     }
 
     /// Test all examples from the original user request
     #[test]
     fn test_all_user_examples() {
-        let items = vec![(
-            json!({
+        let items = vec![crate::data::IndexedItem {
+            value: json!({
                 "type": "furniture",
                 "id": "f_alien_gasper",
                 "name": "gasping tube",
@@ -739,72 +743,72 @@ mod tests {
                     }
                 }
             }),
-            "f_alien_gasper".to_string(),
-            "furniture".to_string(),
-        )];
+            id: "f_alien_gasper".to_string(),
+            item_type: "furniture".to_string(),
+        }];
         let index = crate::search_index::SearchIndex::build(&items);
 
         // Should match
         assert!(
-            !search_with_index(&index, &items, "id:f_alien").is_empty(),
+            !find_matches("id:f_alien", &items, &index).is_empty(),
             "id:f_alien should match"
         );
         assert!(
-            !search_with_index(&index, &items, "id:f_alien EMITTER").is_empty(),
+            !find_matches("id:f_alien EMITTER", &items, &index).is_empty(),
             "id:f_alien EMITTER should match"
         );
         assert!(
-            !search_with_index(&index, &items, "EMITTER").is_empty(),
+            !find_matches("EMITTER", &items, &index).is_empty(),
             "EMITTER should match"
         );
         assert!(
-            !search_with_index(&index, &items, "EMITT").is_empty(),
+            !find_matches("EMITT", &items, &index).is_empty(),
             "EMITT should match"
         );
         assert!(
-            !search_with_index(&index, &items, "ITTER").is_empty(),
+            !find_matches("ITTER", &items, &index).is_empty(),
             "ITTER should match"
         );
         assert!(
-            !search_with_index(&index, &items, "bash.str_min:30").is_empty(),
+            !find_matches("bash.str_min:30", &items, &index).is_empty(),
             "str_min:30 should match"
         );
         assert!(
-            !search_with_index(&index, &items, "bash.str_min:3").is_empty(),
+            !find_matches("bash.str_min:3", &items, &index).is_empty(),
             "str_min:3 should match"
         );
         assert!(
-            !search_with_index(&index, &items, "bash.items.count:15").is_empty(),
+            !find_matches("bash.items.count:15", &items, &index).is_empty(),
             "count:15 should match"
         );
         assert!(
-            !search_with_index(&index, &items, "emissions:migo").is_empty(),
+            !find_matches("emissions:migo", &items, &index).is_empty(),
             "emissions:migo should match"
         );
         assert!(
-            !search_with_index(&index, &items, "bash.str_min:'30'").is_empty(),
+            !find_matches("bash.str_min:'30'", &items, &index).is_empty(),
             "str_min:'30' should match (number to string)"
         );
 
         // Should NOT match
         assert!(
-            search_with_index(&index, &items, "id:'f_alien'").is_empty(),
+            find_matches("id:'f_alien'", &items, &index).is_empty(),
             "id:'f_alien' should NOT match"
         );
         assert!(
-            search_with_index(&index, &items, "'EMITT'").is_empty(),
+            find_matches("'EMITT'", &items, &index).is_empty(),
             "'EMITT' should NOT match"
         );
         assert!(
-            search_with_index(&index, &items, "bash.str_min:'3'").is_empty(),
+            find_matches("bash.str_min:'3'", &items, &index).is_empty(),
             "str_min:'3' should NOT match (exact '3' != '30')"
         );
         assert!(
-            search_with_index(&index, &items, "str_:30").is_empty(),
+            find_matches("str_:30", &items, &index).is_empty(),
             "str_:30 should NOT match"
         );
         assert!(
-            search_with_index(&index, &items, "bash.items.count:16").is_empty(),
+            find_matches("bash.items.count:16", &items, &index).is_empty(),
             "count:16 should NOT match"
         );
     }
@@ -814,41 +818,41 @@ mod tests {
     #[test]
     fn test_search_with_index_shortcuts() {
         // Tests for issue #2: shortcuts i:, t:, c: should work
-        let items = vec![(
-            json!({"id": "test_item", "type": "TOOL", "category": "weapons"}),
-            "test_item".to_string(),
-            "TOOL".to_string(),
-        )];
+        let items = vec![crate::data::IndexedItem {
+            value: json!({"id": "test_item", "type": "TOOL", "category": "weapons"}),
+            id: "test_item".to_string(),
+            item_type: "TOOL".to_string(),
+        }];
 
         let index = crate::search_index::SearchIndex::build(&items);
 
         // Shortcuts should work like full names
-        let results = search_with_index(&index, &items, "i:test");
+        let results = find_matches("i:test", &items, &index);
         assert!(!results.is_empty(), "i:test shortcut should work");
 
-        let results = search_with_index(&index, &items, "t:tool");
+        let results = find_matches("t:tool", &items, &index);
         assert!(!results.is_empty(), "t:tool shortcut should work");
 
-        let results = search_with_index(&index, &items, "c:weapons");
+        let results = find_matches("c:weapons", &items, &index);
         assert!(!results.is_empty(), "c:weapons shortcut should work");
     }
 
     #[test]
     fn test_search_with_index_array_elements() {
         // Tests for issue #3: array elements should be indexed
-        let items = vec![(
-            json!({"id": "test", "flags": ["EMITTER", "DANGEROUS"]}),
-            "test".to_string(),
-            "item".to_string(),
-        )];
+        let items = vec![crate::data::IndexedItem {
+            value: json!({"id": "test", "flags": ["EMITTER", "DANGEROUS"]}),
+            id: "test".to_string(),
+            item_type: "item".to_string(),
+        }];
 
         let index = crate::search_index::SearchIndex::build(&items);
 
         // Should find items with "EMITTER" in the flags array
-        let results = search_with_index(&index, &items, "EMITTER");
+        let results = find_matches("EMITTER", &items, &index);
         assert!(!results.is_empty(), "Should find EMITTER in array");
 
-        let results = search_with_index(&index, &items, "dangerous");
+        let results = find_matches("dangerous", &items, &index);
         assert!(
             !results.is_empty(),
             "Should find DANGEROUS in array (case insensitive)"
@@ -858,30 +862,41 @@ mod tests {
     #[test]
     fn test_search_with_index_nested_fields() {
         // Tests for issue #4 & #5: nested fields should be searchable
-        let items = vec![(
-            json!({
-                "id": "f_alien_gasper",
-                "bash": {
-                    "str_min": 30,
-                    "items": [{"item": "alien_resin", "count": 15}]
-                }
-            }),
-            "f_alien_gasper".to_string(),
-            "furniture".to_string(),
-        )];
-
+        let items = vec![
+            crate::data::IndexedItem {
+                value: json!({
+                    "id": "f_alien_gasper",
+                    "bash": {
+                        "str_min": 30,
+                        "items": [{"item": "alien_resin", "count": 15}]
+                    }
+                }),
+                id: "f_alien_gasper".to_string(),
+                item_type: "furniture".to_string(),
+            },
+            crate::data::IndexedItem {
+                value: json!({"id": "apple", "color": "red"}),
+                id: "apple".to_string(),
+                item_type: "fruit".to_string(),
+            },
+            crate::data::IndexedItem {
+                value: json!({"id": "banana", "color": "yellow"}),
+                id: "banana".to_string(),
+                item_type: "fruit".to_string(),
+            },
+        ];
         let index = crate::search_index::SearchIndex::build(&items);
 
         // Nested field with classifier should work
-        let results = search_with_index(&index, &items, "bash.str_min:30");
+        let results = find_matches("bash.str_min:30", &items, &index);
         assert!(!results.is_empty(), "bash.str_min:30 should match");
 
         // Nested array element
-        let results = search_with_index(&index, &items, "bash.items.count:15");
+        let results = find_matches("bash.items.count:15", &items, &index);
         assert!(!results.is_empty(), "bash.items.count:15 should match");
 
         // Generic search should find nested values
-        let results = search_with_index(&index, &items, "alien_resin");
+        let results = find_matches("alien_resin", &items, &index);
         assert!(
             !results.is_empty(),
             "Should find 'alien_resin' in nested object"
@@ -899,11 +914,11 @@ mod tests {
             let id = format!("item_{}", i);
             let type_ = if i < 10 { "rare" } else { "common" };
             let cat = if i % 2 == 0 { "even" } else { "odd" };
-            items.push((
-                json!({"id": id, "type": type_, "category": cat}),
+            items.push(crate::data::IndexedItem {
+                value: json!({"id": id, "type": type_, "category": cat}),
                 id,
-                type_.to_string(),
-            ));
+                item_type: type_.to_string(),
+            });
         }
 
         let index = crate::search_index::SearchIndex::build(&items);
@@ -912,7 +927,7 @@ mod tests {
         // "common" matches 90 items (10..99)
         // "even" matches 50 items (0, 2, ... 98)
         // Intersection should be 45 items (10, 12, ... 98)
-        let results = search_with_index(&index, &items, "common even");
+        let results = find_matches("common even", &items, &index);
         assert_eq!(results.len(), 45);
 
         // Verify contents
@@ -923,14 +938,14 @@ mod tests {
         }
 
         // Search for "even common" (reverse order)
-        let results2 = search_with_index(&index, &items, "even common");
+        let results2 = find_matches("even common", &items, &index);
         assert_eq!(results2.len(), 45);
 
         // Search for "rare even"
         // "rare" matches 10 items (0..9)
         // "even" matches 50 items
         // Intersection should be 5 items (0, 2, 4, 6, 8)
-        let results3 = search_with_index(&index, &items, "rare even");
+        let results3 = find_matches("rare even", &items, &index);
         assert_eq!(results3.len(), 5);
         for idx in results3 {
             assert!(idx < 10);
@@ -947,8 +962,8 @@ mod tests {
         // Generate 10,000 items with nested structure
         let mut items = Vec::new();
         for i in 0..10000 {
-            items.push((
-                json!({
+            items.push(crate::data::IndexedItem {
+                value: json!({
                     "id": format!("item_{}", i),
                     "description": "This is a test description with some random words like zombie, alien, and robot.",
                     "nested": {
@@ -960,9 +975,9 @@ mod tests {
                     },
                     "array": ["one", "two", "three", "four", "five"]
                 }),
-                format!("item_{}", i),
-                "item".to_string()
-            ));
+                id: format!("item_{}", i),
+                item_type: "item".to_string()
+            });
         }
 
         let start = Instant::now();
