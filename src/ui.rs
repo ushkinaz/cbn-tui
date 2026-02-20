@@ -222,8 +222,9 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
             if app.details_wrapped_width != content_width {
                 app.details_wrapped_annotated =
                     wrap_annotated_lines(&app.details_annotated, content_width);
+                // Borrow instead of clone — no allocation
                 app.details_wrapped_text =
-                    annotated_to_text(app.details_wrapped_annotated.clone(), app.hovered_span_id);
+                    annotated_to_text(&app.details_wrapped_annotated, app.hovered_span_id);
                 app.details_wrapped_width = content_width;
             }
 
@@ -790,18 +791,19 @@ fn name_value(value: &Value) -> Option<String> {
 /// Applies syntax highlighting to JSON text using theme-consistent colors.
 /// Returns a Text object for ratatui rendering.
 /// Converts a matrix of AnnotatedSpans into a ratatui Text object.
+/// Takes a borrow so callers avoid an expensive clone of the full buffer.
 pub fn annotated_to_text(
-    annotated: Vec<Vec<AnnotatedSpan>>,
+    annotated: &[Vec<AnnotatedSpan>],
     hovered_span_id: Option<usize>,
 ) -> Text<'static> {
     Text::from(
         annotated
-            .into_iter()
+            .iter()
             .map(|line| {
                 Line::from(
-                    line.into_iter()
+                    line.iter()
                         .map(|as_| {
-                            let mut span = as_.span;
+                            let mut span = as_.span.clone();
                             if hovered_span_id.is_some() && as_.span_id == hovered_span_id {
                                 span.style = span.style.add_modifier(Modifier::UNDERLINED);
                             }
@@ -1337,7 +1339,7 @@ mod tests {
         let json_str = r#"{"id": "test", "num": 123}"#;
         let style = crate::theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(json_str, &style);
-        let text = annotated_to_text(annotated, None);
+        let text = annotated_to_text(&annotated, None);
 
         // Verification: ensure it still has some styled spans
         let mut has_styles = false;

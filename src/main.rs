@@ -899,8 +899,9 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
     ) && app.hovered_span_id != new_hover_id
     {
         app.hovered_span_id = new_hover_id;
+        // Borrow instead of clone — eliminates O(spans) allocation on every mouse-move
         app.details_wrapped_text =
-            ui::annotated_to_text(app.details_wrapped_annotated.clone(), app.hovered_span_id);
+            ui::annotated_to_text(&app.details_wrapped_annotated, app.hovered_span_id);
         transitioned = true;
     }
 
@@ -1358,7 +1359,7 @@ mod tests {
         let json_str = r#"{"id": "test", "val": 123, "active": true}"#;
         let style = theme::Theme::Dracula.config().json_style;
         let annotated = ui::highlight_json_annotated(json_str, &style);
-        let highlighted = ui::annotated_to_text(annotated, None);
+        let highlighted = ui::annotated_to_text(&annotated, None);
 
         let mut found_id = false;
         let mut found_val = false;
