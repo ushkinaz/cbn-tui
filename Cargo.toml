@@ -19,6 +19,7 @@ reqwest = { version = "0.13.1", features = ["blocking", "gzip", "brotli", "defla
 tui-scrollview = "0.6"
 foldhash = "0.2.0"
 unicode-width = "0.2"
+walkdir = "2.5"
 
 # The profile that 'dist' will build with
 [profile.dist]

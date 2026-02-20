@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::time::Duration;
+use walkdir::WalkDir;
 
 /// Core metadata for a game build, flattened from various JSON sources.
 #[derive(Debug, Clone)]
@@ -234,4 +235,97 @@ pub fn load_root(file_path: &str) -> Result<Root> {
     let reader = io::BufReader::new(file);
     let root: Root = serde_json::from_reader(reader)?;
     Ok(root)
+}
+
+pub fn load_from_source(source_dir: &str, warnings: &mut Vec<String>) -> Result<Root> {
+    if !std::path::Path::new(source_dir).exists() {
+        anyhow::bail!("Source directory does not exist: {}", source_dir);
+    }
+
+    let mut data = Vec::new();
+    let mut type_id_set = std::collections::HashSet::new();
+
+    for entry in WalkDir::new(source_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| !e.file_type().is_dir())
+    {
+        if let Some(ext) = entry.path().extension() {
+            if ext == "json" {
+                match fs::File::open(entry.path()) {
+                    Ok(file) => {
+                        let reader = io::BufReader::new(file);
+                        match serde_json::from_reader::<_, Value>(reader) {
+                            Ok(Value::Array(arr)) => {
+                                for obj in arr {
+                                    if let Some(id_val) = obj.get("id").and_then(|v| v.as_str()) {
+                                        let type_val =
+                                            obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                        if !type_id_set
+                                            .insert((type_val.to_string(), id_val.to_string()))
+                                        {
+                                            warnings.push(format!(
+                                                "Duplicate ID shadowed: {} ({}) in {}",
+                                                id_val,
+                                                type_val,
+                                                entry.path().display()
+                                            ));
+                                        }
+                                    }
+                                    data.push(obj);
+                                }
+                            }
+                            Ok(Value::Object(obj)) => {
+                                if let Some(id_val) = obj.get("id").and_then(|v| v.as_str()) {
+                                    let type_val =
+                                        obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                    if !type_id_set
+                                        .insert((type_val.to_string(), id_val.to_string()))
+                                    {
+                                        warnings.push(format!(
+                                            "Duplicate ID shadowed: {} ({}) in {}",
+                                            id_val,
+                                            type_val,
+                                            entry.path().display()
+                                        ));
+                                    }
+                                }
+                                data.push(Value::Object(obj));
+                            }
+                            Ok(_) => {
+                                warnings.push(format!(
+                                    "File {} contains neither array nor object",
+                                    entry.path().display()
+                                ));
+                            }
+                            Err(e) => {
+                                warnings.push(format!(
+                                    "Parse error in {}: {}",
+                                    entry.path().display(),
+                                    e
+                                ));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warnings.push(format!("Failed to read {}: {}", entry.path().display(), e));
+                    }
+                }
+            }
+        }
+    }
+
+    if data.is_empty() {
+        anyhow::bail!("No valid JSON found in source directory: {}", source_dir);
+    }
+
+    Ok(Root {
+        build: BuildInfo {
+            build_number: "local".to_string(),
+            tag_name: "local".to_string(),
+            prerelease: false,
+            created_at: String::new(),
+        },
+        data,
+    })
 }
