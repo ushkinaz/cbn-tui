@@ -124,15 +124,17 @@ pub struct AppState {
     pub index_time_ms: f64,
     /// Scroll state for details pane
     /// State for scrolling the details pane
-    pub details_scroll_state: tui_scrollview::ScrollViewState,
+    pub details_scroll_state: ScrollViewState,
     /// Annotated spans for the current details view
-    pub details_annotated: Vec<Vec<crate::ui::AnnotatedSpan>>,
+    pub details_annotated: Vec<Vec<ui::AnnotatedSpan>>,
     /// Pre-wrapped annotated spans for the current content_width (used for rendering and hit-testing)
-    pub details_wrapped_annotated: Vec<Vec<crate::ui::AnnotatedSpan>>,
+    pub details_wrapped_annotated: Vec<Vec<ui::AnnotatedSpan>>,
     /// Cached Text object for the current details_wrapped_annotated
     pub details_wrapped_text: ratatui::text::Text<'static>,
     /// Width used for current details_wrapped_annotated
     pub details_wrapped_width: u16,
+    /// Currently hovered span ID for tracking click/hover
+    pub hovered_span_id: Option<usize>,
     /// Screen region of the JSON content area (set during render)
     pub details_content_area: Option<ratatui::layout::Rect>,
     /// Flag to quit app
@@ -205,6 +207,7 @@ impl AppState {
             details_wrapped_annotated: Vec::new(),
             details_wrapped_text: ratatui::text::Text::default(),
             details_wrapped_width: 0,
+            hovered_span_id: None,
             details_content_area: None,
             should_quit: false,
             show_help: false,
@@ -251,18 +254,20 @@ impl AppState {
                         ui::highlight_json_annotated(&json_str, &self.theme.json_style);
                 }
                 Err(_) => {
-                    self.details_annotated = vec![vec![crate::ui::AnnotatedSpan {
+                    self.details_annotated = vec![vec![ui::AnnotatedSpan {
                         span: ratatui::text::Span::raw("Error formatting JSON"),
-                        kind: crate::ui::JsonSpanKind::Whitespace,
+                        kind: ui::JsonSpanKind::Whitespace,
                         key_context: None,
+                        span_id: None,
                     }]];
                 }
             }
         } else {
-            self.details_annotated = vec![vec![crate::ui::AnnotatedSpan {
+            self.details_annotated = vec![vec![ui::AnnotatedSpan {
                 span: ratatui::text::Span::raw("Select an item to view details"),
-                kind: crate::ui::JsonSpanKind::Whitespace,
+                kind: ui::JsonSpanKind::Whitespace,
                 key_context: None,
+                span_id: None,
             }]];
         }
         self.details_scroll_state = ScrollViewState::default();
@@ -721,17 +726,84 @@ fn handle_key_event(
 }
 
 fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
+    let mut is_valid_target = false;
+    let mut new_hover_id = None;
+    let mut target_path = String::new();
+    let mut target_id = None;
+
+    if let Some(span) = ui::hit_test_details(app, mouse.column, mouse.row)
+        && let Some(path) = &span.key_context
+    {
+        let path_str = path.as_ref();
+        let first_part = path_str.split('.').next().unwrap_or("");
+        if !matches!(
+            first_part,
+            "id" | "abstract" | "description" | "__filename" | "//" | "//2" | "rows" | "name"
+        ) && span.span_id.is_some()
+        {
+            is_valid_target = true;
+            new_hover_id = span.span_id;
+            target_path = path_str.to_string();
+            target_id = span.span_id;
+        }
+    }
+
+    let mut transitioned = false;
+
+    if matches!(
+        mouse.kind,
+        event::MouseEventKind::Moved | event::MouseEventKind::Drag(_)
+    ) && app.hovered_span_id != new_hover_id
+    {
+        app.hovered_span_id = new_hover_id;
+        app.details_wrapped_text =
+            ui::annotated_to_text(app.details_wrapped_annotated.clone(), app.hovered_span_id);
+        transitioned = true;
+    }
+
     if matches!(
         mouse.kind,
         event::MouseEventKind::Down(event::MouseButton::Left)
-    ) && ui::hit_test_details(app, mouse.column, mouse.row).is_some()
+    ) && is_valid_target
     {
-        // Mouse interaction foundation is working!
-        // Actual Cmd+Click logic will be added in Phase 2 & 3.
-        return true;
+        let mut full_value = String::new();
+        if let Some(id) = target_id {
+            for line in &app.details_annotated {
+                for span in line {
+                    if span.span_id == Some(id) {
+                        full_value.push_str(&span.span.content);
+                    }
+                }
+            }
+        }
+
+        let clean_val = full_value.trim();
+        let mut unescaped_val = clean_val.to_string();
+        if clean_val.starts_with('"') && clean_val.ends_with('"') && clean_val.len() >= 2 {
+            if let Ok(s) = serde_json::from_str::<String>(clean_val) {
+                unescaped_val = s;
+            } else {
+                unescaped_val = clean_val[1..clean_val.len() - 1].to_string();
+            }
+        }
+
+        let escaped = unescaped_val.replace('\\', "\\\\").replace('\'', "\\'");
+        let final_val = format!("'{}'", escaped);
+
+        let filter_addition = format!("{}:{}", target_path, final_val);
+        let current = app.filter_text.trim();
+        if current.is_empty() {
+            app.filter_text = filter_addition;
+        } else {
+            app.filter_text = format!("{} {}", current, filter_addition);
+        }
+        app.filter_cursor = app.filter_text.chars().count();
+        app.update_filter();
+
+        transitioned = true;
     }
 
-    false
+    transitioned
 }
 
 fn load_initial_data<B: ratatui::backend::Backend>(
@@ -915,7 +987,7 @@ where
     B::Error: Send + Sync + 'static,
 {
     let total = data.len();
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     let mut last_draw = Instant::now();
     let mut indexed_items: Vec<(Value, String, String)> = Vec::with_capacity(total);
 
@@ -1036,7 +1108,7 @@ mod tests {
         let json_str = r#"{"id": "test", "val": 123, "active": true}"#;
         let style = theme::Theme::Dracula.config().json_style;
         let annotated = ui::highlight_json_annotated(json_str, &style);
-        let highlighted = ui::annotated_to_text(annotated);
+        let highlighted = ui::annotated_to_text(annotated, None);
 
         let mut found_id = false;
         let mut found_val = false;
