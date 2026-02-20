@@ -13,7 +13,7 @@ use std::rc::Rc;
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::theme;
-use crate::{AppState, InputMode};
+use crate::{AppState, FocusPane, InputMode};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Semantic role of a span in the rendered JSON.
@@ -53,6 +53,13 @@ pub fn ui(f: &mut Frame, app: &mut AppState) {
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(chunks[0]);
 
+    app.list_area = Some(main_chunks[0]);
+    app.list_content_area = Some(block_inner_area(main_chunks[0]));
+    app.details_area = Some(main_chunks[1]);
+    app.details_content_area = compute_details_content_area(app, main_chunks[1]);
+    app.filter_area = Some(chunks[1]);
+    app.filter_input_area = Some(block_inner_area(chunks[1]));
+
     // Render item list
     render_item_list(f, app, main_chunks[0]);
 
@@ -74,6 +81,42 @@ pub fn ui(f: &mut Frame, app: &mut AppState) {
     }
 }
 
+fn block_inner_area(area: Rect) -> Rect {
+    Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    )
+}
+
+fn compute_details_content_area(app: &AppState, area: Rect) -> Option<Rect> {
+    let inner_area = block_inner_area(area);
+    if inner_area.width == 0 || inner_area.height == 0 {
+        return None;
+    }
+
+    let mut content_area = inner_area;
+    if app.get_selected_item().is_some() {
+        let header_height = 2;
+        let separator_y = inner_area.y + header_height;
+        if separator_y < area.y + area.height - 1 {
+            content_area = Rect::new(
+                inner_area.x,
+                separator_y + 1,
+                inner_area.width,
+                inner_area.height.saturating_sub(header_height + 1),
+            );
+        }
+    }
+
+    if content_area.width > 0 && content_area.height > 0 {
+        Some(content_area)
+    } else {
+        None
+    }
+}
+
 /// Renders the scrollable list of game items.
 fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
     let items: Vec<ListItem> = app
@@ -91,9 +134,14 @@ fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
         })
         .collect();
 
+    let is_focused = app.focused_pane == FocusPane::List;
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(app.theme.border_selected)
+        .border_style(if is_focused {
+            app.theme.border_selected
+        } else {
+            app.theme.border
+        })
         .title_style(app.theme.title)
         .title(format!(" Items ({}) ", app.filtered_indices.len()))
         .title_bottom(Line::from(" up / down ").right_aligned())
@@ -125,9 +173,14 @@ fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
 
 /// Renders the details pane showing syntax-highlighted JSON data.
 fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
+    let is_focused = app.focused_pane == FocusPane::Details;
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(app.theme.border.bg(app.theme.background))
+        .border_style(if is_focused {
+            app.theme.border_selected
+        } else {
+            app.theme.border
+        })
         .style(app.theme.border.bg(app.theme.background))
         .title(" JSON ")
         .title_alignment(Alignment::Left)
@@ -165,8 +218,6 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
         let content_width = content_area.width.saturating_sub(horizontal_padding * 2);
 
         if content_width > 0 && content_area.height > 0 {
-            app.details_content_area = Some(content_area);
-
             // Re-wrap if width changed
             if app.details_wrapped_width != content_width {
                 app.details_wrapped_annotated =
@@ -268,9 +319,10 @@ fn render_metadata_header(f: &mut Frame, app: &mut AppState, area: Rect) -> u16 
 
 /// Renders the interactive filter input box.
 fn render_filter(f: &mut Frame, app: &mut AppState, area: Rect) {
+    let is_focused = app.focused_pane == FocusPane::Filter;
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(if app.input_mode == InputMode::Filtering {
+        .border_style(if is_focused {
             app.theme.border_selected
         } else {
             app.theme.border
@@ -280,7 +332,7 @@ fn render_filter(f: &mut Frame, app: &mut AppState, area: Rect) {
 
     let inner = block.inner(area);
     let horizontal_scroll =
-        filter_viewport_offset(&app.filter_text, app.filter_cursor, inner.width);
+        filter_horizontal_scroll(&app.filter_text, app.filter_cursor, inner.width);
 
     let content = if app.filter_text.is_empty() && app.input_mode != InputMode::Filtering {
         Text::from(Line::from(Span::styled(
@@ -1168,6 +1220,22 @@ fn filter_viewport_offset(text: &str, cursor: usize, visible_width: u16) -> u16 
     cursor_offset.saturating_sub(visible_width.saturating_sub(1))
 }
 
+pub fn filter_horizontal_scroll(text: &str, cursor: usize, visible_width: u16) -> u16 {
+    filter_viewport_offset(text, cursor, visible_width)
+}
+
+pub fn filter_cursor_for_column(text: &str, target_column: u16) -> usize {
+    let mut width = 0u16;
+    for (idx, ch) in text.chars().enumerate() {
+        let char_width = ch.width().unwrap_or(0) as u16;
+        if width + char_width > target_column {
+            return idx;
+        }
+        width += char_width;
+    }
+    text.chars().count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1400,5 +1468,20 @@ mod tests {
         assert_eq!(filter_viewport_offset(text, 1, 2), 1);
         assert_eq!(filter_viewport_offset(text, 2, 3), 1);
         assert_eq!(filter_viewport_offset(text, 5, 4), 3);
+    }
+
+    #[test]
+    fn test_filter_cursor_for_column_clamps_to_end() {
+        assert_eq!(filter_cursor_for_column("abc", 0), 0);
+        assert_eq!(filter_cursor_for_column("abc", 2), 2);
+        assert_eq!(filter_cursor_for_column("abc", 50), 3);
+    }
+
+    #[test]
+    fn test_filter_cursor_for_column_handles_wide_characters() {
+        assert_eq!(filter_cursor_for_column("🦀a", 0), 0);
+        assert_eq!(filter_cursor_for_column("🦀a", 1), 0);
+        assert_eq!(filter_cursor_for_column("🦀a", 2), 1);
+        assert_eq!(filter_cursor_for_column("🦀a", 3), 2);
     }
 }
