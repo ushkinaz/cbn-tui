@@ -54,11 +54,9 @@ pub fn ui(f: &mut Frame, app: &mut AppState) {
         .split(chunks[0]);
 
     app.list_area = Some(main_chunks[0]);
-    app.list_content_area = Some(block_inner_area(main_chunks[0]));
     app.details_area = Some(main_chunks[1]);
     app.details_content_area = compute_details_content_area(app, main_chunks[1]);
     app.filter_area = Some(chunks[1]);
-    app.filter_input_area = Some(block_inner_area(chunks[1]));
 
     // Render item list
     render_item_list(f, app, main_chunks[0]);
@@ -81,34 +79,32 @@ pub fn ui(f: &mut Frame, app: &mut AppState) {
     }
 }
 
-fn block_inner_area(area: Rect) -> Rect {
-    Rect::new(
-        area.x.saturating_add(1),
-        area.y.saturating_add(1),
-        area.width.saturating_sub(2),
-        area.height.saturating_sub(2),
-    )
-}
-
 fn compute_details_content_area(app: &AppState, area: Rect) -> Option<Rect> {
-    let inner_area = block_inner_area(area);
+    let inner_area = area.inner(ratatui::layout::Margin::new(1, 1));
     if inner_area.width == 0 || inner_area.height == 0 {
         return None;
     }
 
-    let mut content_area = inner_area;
-    if app.get_selected_item().is_some() {
-        let header_height = 2;
-        let separator_y = inner_area.y + header_height;
-        if separator_y < area.y + area.height - 1 {
-            content_area = Rect::new(
-                inner_area.x,
-                separator_y + 1,
-                inner_area.width,
-                inner_area.height.saturating_sub(header_height + 1),
-            );
-        }
-    }
+    let constraints = if app.get_selected_item().is_some() {
+        vec![
+            Constraint::Length(2), // Metadata header
+            Constraint::Length(1), // Separator
+            Constraint::Min(0),    // Content
+        ]
+    } else {
+        vec![Constraint::Min(0)]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner_area);
+
+    let content_area = if app.get_selected_item().is_some() {
+        chunks[2]
+    } else {
+        chunks[0]
+    };
 
     if content_area.width > 0 && content_area.height > 0 {
         Some(content_area)
@@ -119,16 +115,14 @@ fn compute_details_content_area(app: &AppState, area: Rect) -> Option<Rect> {
 
 /// Renders the scrollable list of game items.
 fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
+    // Borrow pre-computed display strings — no JSON traversal or String allocation per frame.
     let items: Vec<ListItem> = app
-        .filtered_indices
+        .cached_display
         .iter()
-        .map(|&idx| {
-            let (json, id, type_) = &app.indexed_items[idx];
-            let display_name = display_name_for_item(json, id, type_);
-
+        .map(|(display, type_prefix)| {
             let type_label = Line::from(vec![
-                Span::styled(format!("{} ", type_), app.theme.title),
-                Span::raw(display_name),
+                Span::styled(type_prefix.as_str(), app.theme.title),
+                Span::raw(display.as_str()),
             ]);
             ListItem::new(type_label)
         })
@@ -147,6 +141,8 @@ fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
         .title_bottom(Line::from(" up / down ").right_aligned())
         .title_alignment(Alignment::Left)
         .style(app.theme.list_normal);
+
+    app.list_content_area = Some(block.inner(area));
 
     let list = List::new(items)
         .block(block)
@@ -176,12 +172,14 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
     let is_focused = app.focused_pane == FocusPane::Details;
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(if is_focused {
+        .style(
+            if is_focused {
             app.theme.border_selected
         } else {
             app.theme.border
-        })
-        .style(app.theme.border.bg(app.theme.background))
+            }
+            .bg(app.theme.background),
+        )
         .title(" JSON ")
         .title_alignment(Alignment::Left)
         .title_style(app.theme.title)
@@ -200,9 +198,10 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
             // Render a horizontal separator line that merges with borders
             let separator_y = inner_area.y + header_height;
             if separator_y < area.y + area.height - 1 {
-                let separator_line = format!("├{}┤", "─".repeat(inner_area.width as usize));
+                let border_style = app.theme.border;
+                let separator_line = app.get_separator(inner_area.width);
                 f.render_widget(
-                    Paragraph::new(separator_line).style(app.theme.border),
+                    Paragraph::new(separator_line).style(border_style),
                     Rect::new(area.x, separator_y, area.width, 1),
                 );
                 content_area = Rect::new(
@@ -222,8 +221,6 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
             if app.details_wrapped_width != content_width {
                 app.details_wrapped_annotated =
                     wrap_annotated_lines(&app.details_annotated, content_width);
-                app.details_wrapped_text =
-                    annotated_to_text(app.details_wrapped_annotated.clone(), app.hovered_span_id);
                 app.details_wrapped_width = content_width;
             }
 
@@ -238,10 +235,8 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
             scroll_view.buf_mut().set_style(scroll_area, app.theme.text);
 
             let content_rect = Rect::new(0, 0, content_width, content_height);
-            scroll_view.render_widget(
-                Paragraph::new(app.details_wrapped_text.clone()).style(app.theme.text),
-                content_rect,
-            );
+            let text = annotated_to_text(&app.details_wrapped_annotated, app.hovered_span_id);
+            scroll_view.render_widget(Paragraph::new(text).style(app.theme.text), content_rect);
 
             // Render ScrollView centered horizontally within content_area using the padding
             let scroll_view_area = Rect::new(
@@ -260,9 +255,12 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
 /// Uses a two-column layout with 50% width each.
 /// Returns the height occupied by the header (always 2).
 fn render_metadata_header(f: &mut Frame, app: &mut AppState, area: Rect) -> u16 {
-    let Some((json, id, type_)) = app.get_selected_item() else {
+    let Some(item) = app.get_selected_item() else {
         return 0;
     };
+    let json = &item.value;
+    let id = &item.id;
+    let type_ = &item.item_type;
 
     let id_val = if !id.is_empty() {
         id.as_str()
@@ -331,6 +329,7 @@ fn render_filter(f: &mut Frame, app: &mut AppState, area: Rect) {
         .title_style(app.theme.title);
 
     let inner = block.inner(area);
+    app.filter_input_area = Some(inner);
     let horizontal_scroll =
         filter_horizontal_scroll(&app.filter_text, app.filter_cursor, inner.width);
 
@@ -708,7 +707,7 @@ fn render_progress_modal(f: &mut Frame, app: &mut AppState) {
     }
 }
 
-fn display_name_for_item(json: &Value, id: &str, type_: &str) -> String {
+pub(crate) fn display_name_for_item(json: &Value, id: &str, type_: &str) -> String {
     if !id.is_empty() {
         return id.to_string();
     }
@@ -789,22 +788,23 @@ fn name_value(value: &Value) -> Option<String> {
 /// Applies syntax highlighting to JSON text using theme-consistent colors.
 /// Returns a Text object for ratatui rendering.
 /// Converts a matrix of AnnotatedSpans into a ratatui Text object.
-pub fn annotated_to_text(
-    annotated: Vec<Vec<AnnotatedSpan>>,
+/// Takes a borrow so callers avoid an expensive clone of the full buffer.
+pub fn annotated_to_text<'a>(
+    annotated: &'a [Vec<AnnotatedSpan>],
     hovered_span_id: Option<usize>,
-) -> Text<'static> {
+) -> Text<'a> {
     Text::from(
         annotated
-            .into_iter()
+            .iter()
             .map(|line| {
                 Line::from(
-                    line.into_iter()
+                    line.iter()
                         .map(|as_| {
-                            let mut span = as_.span;
+                            let mut style = as_.span.style;
                             if hovered_span_id.is_some() && as_.span_id == hovered_span_id {
-                                span.style = span.style.add_modifier(Modifier::UNDERLINED);
+                                style = style.add_modifier(Modifier::UNDERLINED);
                             }
-                            span
+                            Span::styled(as_.span.content.as_ref(), style)
                         })
                         .collect::<Vec<_>>(),
                 )
@@ -900,7 +900,12 @@ pub fn wrap_annotated_lines(lines: &[Vec<AnnotatedSpan>], width: u16) -> Vec<Vec
 
 #[derive(Debug, Default)]
 struct JsonParserState {
-    stack: Vec<Option<Rc<str>>>,
+    /// Each level holds the current key name at that nesting depth (None for array slots).
+    stack: Vec<Option<String>>,
+    /// Eagerly-maintained dot-joined path cached as an Rc<str>.
+    /// current_key() just clones this — O(1) with no heap allocation.
+    /// Rebuilt (O(depth)) only on push/pop/update_key, which are rare vs. per-span calls.
+    current_path_rc: Option<Rc<str>>,
     next_span_id: usize,
 }
 
@@ -908,6 +913,7 @@ impl JsonParserState {
     fn new() -> Self {
         Self {
             stack: vec![None],
+            current_path_rc: None,
             next_span_id: 1,
         }
     }
@@ -918,28 +924,40 @@ impl JsonParserState {
         id
     }
 
+    /// Returns the cached context path. Cheap Rc clone — no allocation.
     fn current_key(&self) -> Option<Rc<str>> {
-        let parts: Vec<&str> = self
-            .stack
-            .iter()
-            .filter_map(|k| k.as_deref())
-            .filter(|k| !k.is_empty())
-            .collect();
-        if parts.is_empty() {
+        self.current_path_rc.clone()
+    }
+
+    /// Rebuilds current_path_rc from the stack. Called only on structural changes.
+    fn rebuild_path(&mut self) {
+        let mut path = String::new();
+        for entry in &self.stack {
+            if let Some(k) = entry {
+                if !k.is_empty() {
+                    if !path.is_empty() {
+                        path.push('.');
+                    }
+                    path.push_str(k);
+                }
+            }
+        }
+        self.current_path_rc = if path.is_empty() {
             None
         } else {
-            Some(Rc::from(parts.join(".").as_str()))
-        }
+            Some(Rc::from(path.as_str()))
+        };
     }
 
     fn update_key(&mut self, key: &str) {
         if let Some(top) = self.stack.last_mut() {
-            *top = Some(Rc::from(key));
+            *top = Some(key.to_string());
         }
+        self.rebuild_path();
     }
 
     fn push_object(&mut self) {
-        self.stack.push(None); // new object structure
+        self.stack.push(None); // new object level; key will be set by update_key
     }
 
     fn push_array(&mut self) {
@@ -949,6 +967,7 @@ impl JsonParserState {
     fn pop(&mut self) {
         if self.stack.len() > 1 {
             self.stack.pop();
+            self.rebuild_path();
         }
     }
 }
@@ -1336,7 +1355,7 @@ mod tests {
         let json_str = r#"{"id": "test", "num": 123}"#;
         let style = crate::theme::Theme::Dracula.config().json_style;
         let annotated = highlight_json_annotated(json_str, &style);
-        let text = annotated_to_text(annotated, None);
+        let text = annotated_to_text(&annotated, None);
 
         // Verification: ensure it still has some styled spans
         let mut has_styles = false;
@@ -1446,7 +1465,11 @@ mod tests {
 
     fn create_test_app() -> crate::AppState {
         use serde_json::json;
-        let indexed_items = vec![(json!({"id": "1"}), "1".to_string(), "t".to_string())];
+        let indexed_items = vec![crate::data::IndexedItem {
+            value: json!({"id": "1"}),
+            id: "1".to_string(),
+            item_type: "t".to_string(),
+        }];
         let search_index = crate::search_index::SearchIndex::build(&indexed_items);
         let theme = crate::theme::Theme::Dracula.config();
         crate::AppState::new(

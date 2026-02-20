@@ -107,7 +107,7 @@ enum AppAction {
 /// Application state for the Ratatui app.
 pub struct AppState {
     /// All loaded items in indexed format (json, id, type)
-    pub indexed_items: Vec<(Value, String, String)>,
+    pub indexed_items: Vec<crate::data::IndexedItem>,
     /// Search index for fast lookups
     pub search_index: search_index::SearchIndex,
     /// Set of purely IDs for O(1) existence checks (used for click navigation)
@@ -145,8 +145,6 @@ pub struct AppState {
     pub details_annotated: Vec<Vec<ui::AnnotatedSpan>>,
     /// Pre-wrapped annotated spans for the current content_width (used for rendering and hit-testing)
     pub details_wrapped_annotated: Vec<Vec<ui::AnnotatedSpan>>,
-    /// Cached Text object for the current details_wrapped_annotated
-    pub details_wrapped_text: ratatui::text::Text<'static>,
     /// Width used for current details_wrapped_annotated
     pub details_wrapped_width: u16,
     /// Currently hovered span ID for tracking click/hover
@@ -193,12 +191,22 @@ pub struct AppState {
     pub source_dir: Option<String>,
     /// Warnings accumulated during source loading
     pub source_warnings: Vec<String>,
+    /// Index into indexed_items that is currently rendered in the details pane.
+    /// Used to skip expensive JSON re-rendering when the same item is re-selected.
+    cached_details_item_idx: Option<usize>,
+    /// Pre-computed (display_name, type_prefix) strings for the current filtered list.
+    /// Rebuilt only when filtered_indices changes, used by render_item_list via &str borrows
+    /// to avoid JSON traversal and String allocations on every frame.
+    pub cached_display: Vec<(String, String)>,
+    /// Cached horizontal separator for the details pane to avoid an allocation per frame.
+    /// Stores the width and the generated string.
+    cached_separator: (u16, String),
 }
 
 impl AppState {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        indexed_items: Vec<(Value, String, String)>,
+        indexed_items: Vec<crate::data::IndexedItem>,
         search_index: search_index::SearchIndex,
         theme: theme::ThemeConfig,
         game_version: String,
@@ -213,8 +221,8 @@ impl AppState {
         let filtered_indices: Vec<usize> = (0..indexed_items.len()).collect();
         let id_set = indexed_items
             .iter()
-            .filter(|(_, id, _)| !id.is_empty())
-            .map(|(_, id, _)| id.clone())
+            .filter(|item| !item.id.is_empty())
+            .map(|item| item.id.clone())
             .collect();
         let mut list_state = ListState::default();
         if filtered_indices.is_empty() {
@@ -243,7 +251,6 @@ impl AppState {
             details_scroll_state: ScrollViewState::default(),
             details_annotated: Vec::new(),
             details_wrapped_annotated: Vec::new(),
-            details_wrapped_text: ratatui::text::Text::default(),
             details_wrapped_width: 0,
             hovered_span_id: None,
             details_content_area: None,
@@ -267,6 +274,9 @@ impl AppState {
             pending_action: None,
             source_dir,
             source_warnings: Vec::new(),
+            cached_details_item_idx: None,
+            cached_display: Vec::new(),
+            cached_separator: (0, String::new()),
         };
         app.load_history();
         app.refresh_details();
@@ -291,9 +301,35 @@ impl AppState {
         let _ = fs::write(&self.history_path, content);
     }
 
+    /// Gets or creates the horizontal separator for a given width.
+    pub fn get_separator(&mut self, width: u16) -> &str {
+        if self.cached_separator.0 != width {
+            let separator = format!("├{}┤", "─".repeat(width as usize));
+            self.cached_separator = (width, separator);
+        }
+        &self.cached_separator.1
+    }
+
     fn refresh_details(&mut self) {
-        if let Some((json, _, _)) = self.get_selected_item() {
-            match serde_json::to_string_pretty(json) {
+        // Resolve the indexed_items index for the current selection.
+        let selected_item_idx = self
+            .list_state
+            .selected()
+            .and_then(|sel| self.filtered_indices.get(sel).copied());
+
+        // Always reset scroll so navigation feels snappy.
+        self.details_scroll_state = ScrollViewState::default();
+
+        // Skip the expensive serde_json::to_string_pretty + highlight pass when
+        // the same item is already rendered. The wrapped cache is kept intact so
+        // the width-change guard in render_details still triggers a re-wrap on resize.
+        if self.cached_details_item_idx == selected_item_idx && selected_item_idx.is_some() {
+            return;
+        }
+        self.cached_details_item_idx = selected_item_idx;
+
+        if let Some(item) = self.get_selected_item() {
+            match serde_json::to_string_pretty(&item.value) {
                 Ok(json_str) => {
                     self.details_annotated =
                         ui::highlight_json_annotated(&json_str, &self.theme.json_style);
@@ -315,10 +351,9 @@ impl AppState {
                 span_id: None,
             }]];
         }
-        self.details_scroll_state = ScrollViewState::default();
+        // Invalidate wrapped cache so render_details re-wraps for the new content.
         self.details_wrapped_width = 0;
         self.details_wrapped_annotated.clear();
-        self.details_wrapped_text = ratatui::text::Text::default();
     }
 
     /// Clamps the current list selection to valid bounds.
@@ -347,7 +382,7 @@ impl AppState {
         self.refresh_details();
     }
 
-    pub fn get_selected_item(&self) -> Option<&(Value, String, String)> {
+    pub fn get_selected_item(&self) -> Option<&crate::data::IndexedItem> {
         self.list_state
             .selected()
             .and_then(|idx| self.filtered_indices.get(idx))
@@ -433,19 +468,37 @@ impl AppState {
 
     fn update_filter(&mut self) {
         let new_filtered =
-            matcher::search_with_index(&self.search_index, &self.indexed_items, &self.filter_text);
+            matcher::find_matches(&self.filter_text, &self.indexed_items, &self.search_index);
         self.filtered_indices = new_filtered;
         if self.filtered_indices.is_empty() {
             self.list_state.select(None);
         } else {
             self.list_state.select(Some(0));
         }
+        // Rebuild display cache whenever the filtered set changes.
+        self.rebuild_display_cache();
         self.refresh_details();
+    }
+
+    /// Rebuilds cached_display from the current filtered_indices.
+    /// Called only when the filter result set changes — not on every frame.
+    fn rebuild_display_cache(&mut self) {
+        self.cached_display = self
+            .filtered_indices
+            .iter()
+            .map(|&idx| {
+                let item = &self.indexed_items[idx];
+                let display = ui::display_name_for_item(&item.value, &item.id, &item.item_type);
+                // Pre-format the type prefix once so render borrows it as &str.
+                let type_prefix = format!("{} ", item.item_type);
+                (display, type_prefix)
+            })
+            .collect();
     }
 
     fn apply_new_dataset(
         &mut self,
-        indexed_items: Vec<(Value, String, String)>,
+        indexed_items: Vec<crate::data::IndexedItem>,
         search_index: search_index::SearchIndex,
         total_items: usize,
         index_time_ms: f64,
@@ -457,14 +510,16 @@ impl AppState {
 
         let id_set = indexed_items
             .iter()
-            .filter(|(_, id, _)| !id.is_empty())
-            .map(|(_, id, _)| id.clone())
+            .filter(|item| !item.id.is_empty())
+            .map(|item| item.id.clone())
             .collect();
 
         self.indexed_items = indexed_items;
         self.search_index = search_index;
         self.id_set = id_set;
         self.total_items = total_items;
+        // New dataset means all item indices are stale — force a re-render.
+        self.cached_details_item_idx = None;
         self.index_time_ms = index_time_ms;
         self.game_version = game_version;
         self.game_version_key = game_version_key;
@@ -848,23 +903,19 @@ const ID_LIKE_FIELDS: &[&str] = &[
 
 const SCROLL_LINES: u16 = 3;
 
-fn rect_contains(area: ratatui::layout::Rect, column: u16, row: u16) -> bool {
-    column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height
-}
-
 fn pane_at(app: &AppState, column: u16, row: u16) -> Option<FocusPane> {
     if let Some(area) = app.filter_area
-        && rect_contains(area, column, row)
+        && area.contains((column, row).into())
     {
         return Some(FocusPane::Filter);
     }
     if let Some(area) = app.list_area
-        && rect_contains(area, column, row)
+        && area.contains((column, row).into())
     {
         return Some(FocusPane::List);
     }
     if let Some(area) = app.details_area
-        && rect_contains(area, column, row)
+        && area.contains((column, row).into())
     {
         return Some(FocusPane::Details);
     }
@@ -903,8 +954,6 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
     ) && app.hovered_span_id != new_hover_id
     {
         app.hovered_span_id = new_hover_id;
-        app.details_wrapped_text =
-            ui::annotated_to_text(app.details_wrapped_annotated.clone(), app.hovered_span_id);
         transitioned = true;
     }
 
@@ -918,8 +967,14 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
                 FocusPane::List => {
                     if !app.filtered_indices.is_empty() {
                         for _ in 0..SCROLL_LINES {
-                            app.move_selection(if scroll_down { 1 } else { -1 });
+                            if scroll_down {
+                                app.list_state.select_next();
+                            } else {
+                                app.list_state.select_previous();
+                            }
                         }
+                        app.clamp_selection();
+                        app.refresh_details();
                         transitioned = true;
                     }
                 }
@@ -932,10 +987,7 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
         }
     }
 
-    if matches!(
-        mouse.kind,
-        event::MouseEventKind::Down(event::MouseButton::Left)
-    ) {
+    if let event::MouseEventKind::Down(event::MouseButton::Left) = mouse.kind {
         if let Some(pane) = hovered_pane {
             let previous_focus = app.focused_pane;
             let previous_mode = app.input_mode;
@@ -944,15 +996,10 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
                 transitioned = true;
             }
         }
-    }
 
-    if matches!(
-        mouse.kind,
-        event::MouseEventKind::Down(event::MouseButton::Left)
-    ) {
         if hovered_pane == Some(FocusPane::List)
             && let Some(content_area) = app.list_content_area
-            && rect_contains(content_area, mouse.column, mouse.row)
+            && content_area.contains((mouse.column, mouse.row).into())
             && !app.filtered_indices.is_empty()
         {
             let row = mouse.row.saturating_sub(content_area.y) as usize;
@@ -969,7 +1016,7 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
 
         if hovered_pane == Some(FocusPane::Filter)
             && let Some(input_area) = app.filter_input_area
-            && rect_contains(input_area, mouse.column, mouse.row)
+            && input_area.contains((mouse.column, mouse.row).into())
         {
             let horizontal_scroll =
                 ui::filter_horizontal_scroll(&app.filter_text, app.filter_cursor, input_area.width);
@@ -981,59 +1028,55 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
                 transitioned = true;
             }
         }
-    }
 
-    if matches!(
-        mouse.kind,
-        event::MouseEventKind::Down(event::MouseButton::Left)
-    ) && is_valid_target
-    {
-        let mut full_value = String::new();
-        if let Some(id) = target_id {
-            for line in &app.details_annotated {
-                for span in line {
-                    if span.span_id == Some(id) {
-                        full_value.push_str(&span.span.content);
+        if is_valid_target {
+            let mut full_value = String::new();
+            if let Some(id) = target_id {
+                for line in &app.details_annotated {
+                    for span in line {
+                        if span.span_id == Some(id) {
+                            full_value.push_str(&span.span.content);
+                        }
                     }
                 }
             }
-        }
 
-        let clean_val = full_value.trim();
-        let mut unescaped_val = clean_val.to_string();
-        if clean_val.starts_with('"') && clean_val.ends_with('"') && clean_val.len() >= 2 {
-            if let Ok(s) = serde_json::from_str::<String>(clean_val) {
-                unescaped_val = s;
-            } else {
-                unescaped_val = clean_val[1..clean_val.len() - 1].to_string();
+            let clean_val = full_value.trim();
+            let mut unescaped_val = clean_val.to_string();
+            if clean_val.starts_with('"') && clean_val.ends_with('"') && clean_val.len() >= 2 {
+                if let Ok(s) = serde_json::from_str::<String>(clean_val) {
+                    unescaped_val = s;
+                } else {
+                    unescaped_val = clean_val[1..clean_val.len() - 1].to_string();
+                }
             }
-        }
 
-        let escaped = unescaped_val.replace('\\', "\\\\").replace('\'', "\\'");
-        let final_val = format!("'{}'", escaped);
+            let escaped = unescaped_val.replace('\\', "\\\\").replace('\'', "\\'");
+            let final_val = format!("'{}'", escaped);
 
-        let is_id_like =
-            ID_LIKE_FIELDS.contains(&target_path.as_str()) || app.id_set.contains(&unescaped_val);
+            let is_id_like = ID_LIKE_FIELDS.contains(&target_path.as_str())
+                || app.id_set.contains(&unescaped_val);
 
-        if is_id_like {
-            app.filter_text = format!("i:{}", final_val);
-            app.filter_cursor = app.filter_text.chars().count();
-            app.update_filter();
-            app.focus_pane(FocusPane::Details);
-        } else {
-            let filter_addition = format!("{}:{}", target_path, final_val);
-            let current = app.filter_text.trim();
-            if current.is_empty() {
-                app.filter_text = filter_addition;
+            if is_id_like {
+                app.filter_text = format!("i:{}", final_val);
+                app.filter_cursor = app.filter_text.chars().count();
+                app.update_filter();
+                app.focus_pane(FocusPane::Details);
             } else {
-                app.filter_text = format!("{} {}", current, filter_addition);
+                let filter_addition = format!("{}:{}", target_path, final_val);
+                let current = app.filter_text.trim();
+                if current.is_empty() {
+                    app.filter_text = filter_addition;
+                } else {
+                    app.filter_text = format!("{} {}", current, filter_addition);
+                }
+                app.filter_cursor = app.filter_text.chars().count();
+                app.update_filter();
+                app.focus_pane(FocusPane::Filter);
             }
-            app.filter_cursor = app.filter_text.chars().count();
-            app.update_filter();
-            app.focus_pane(FocusPane::Filter);
-        }
 
-        transitioned = true;
+            transitioned = true;
+        }
     }
 
     transitioned
@@ -1240,14 +1283,14 @@ fn build_index_with_progress<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut AppState,
     data: Vec<Value>,
-) -> Result<(Vec<(Value, String, String)>, search_index::SearchIndex, f64)>
+) -> Result<(Vec<crate::data::IndexedItem>, search_index::SearchIndex, f64)>
 where
     B::Error: Send + Sync + 'static,
 {
     let total = data.len();
     let start = Instant::now();
     let mut last_draw = Instant::now();
-    let mut indexed_items: Vec<(Value, String, String)> = Vec::with_capacity(total);
+    let mut indexed_items: Vec<crate::data::IndexedItem> = Vec::with_capacity(total);
 
     for (idx, v) in data.into_iter().enumerate() {
         let id = v
@@ -1260,7 +1303,11 @@ where
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        indexed_items.push((v, id, type_));
+        indexed_items.push(crate::data::IndexedItem {
+            value: v,
+            id,
+            item_type: type_,
+        });
 
         if total > 0 && (idx % 500 == 0 || idx + 1 == total) {
             let ratio = (idx + 1) as f64 / total as f64 * 0.4;
@@ -1272,7 +1319,7 @@ where
         }
     }
 
-    indexed_items.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)));
+    indexed_items.sort_by(|a, b| a.item_type.cmp(&b.item_type).then_with(|| a.id.cmp(&b.id)));
 
     let mut draw_error: Option<anyhow::Error> = None;
     let mut last_ratio = -1.0;
@@ -1368,7 +1415,7 @@ mod tests {
         let json_str = r#"{"id": "test", "val": 123, "active": true}"#;
         let style = theme::Theme::Dracula.config().json_style;
         let annotated = ui::highlight_json_annotated(json_str, &style);
-        let highlighted = ui::annotated_to_text(annotated, None);
+        let highlighted = ui::annotated_to_text(&annotated, None);
 
         let mut found_id = false;
         let mut found_val = false;
@@ -1431,8 +1478,8 @@ mod tests {
     #[test]
     fn test_handle_key_event_navigation() {
         let indexed_items = vec![
-            (json!({"id": "1"}), "1".to_string(), "type".to_string()),
-            (json!({"id": "2"}), "2".to_string(), "type".to_string()),
+            crate::data::IndexedItem { value: json!({"id": "1"}), id: "1".to_string(), item_type: "type".to_string() },
+            crate::data::IndexedItem { value: json!({"id": "2"}), id: "2".to_string(), item_type: "type".to_string() },
         ];
         let search_index = search_index::SearchIndex::build(&indexed_items);
         let theme = theme::Theme::Dracula.config();
@@ -1471,16 +1518,16 @@ mod tests {
     #[test]
     fn test_handle_key_event_filtering() {
         let indexed_items = vec![
-            (
-                json!({"id": "apple"}),
-                "apple".to_string(),
-                "fruit".to_string(),
-            ),
-            (
-                json!({"id": "banana"}),
-                "banana".to_string(),
-                "fruit".to_string(),
-            ),
+            crate::data::IndexedItem {
+                value: json!({"id": "apple"}),
+                id: "apple".to_string(),
+                item_type: "fruit".to_string(),
+            },
+            crate::data::IndexedItem {
+                value: json!({"id": "banana"}),
+                id: "banana".to_string(),
+                item_type: "fruit".to_string(),
+            },
         ];
         let search_index = search_index::SearchIndex::build(&indexed_items);
         let theme = theme::Theme::Dracula.config();
@@ -1529,7 +1576,7 @@ mod tests {
 
     #[test]
     fn test_handle_key_event_autofocus_filter() {
-        let indexed_items = vec![(json!({"id": "1"}), "1".to_string(), "t".to_string())];
+        let indexed_items = vec![crate::data::IndexedItem { value: json!({"id": "1"}), id: "1".to_string(), item_type: "t".to_string() }];
         let search_index = search_index::SearchIndex::build(&indexed_items);
         let theme = theme::Theme::Dracula.config();
 
@@ -1559,7 +1606,7 @@ mod tests {
 
     #[test]
     fn test_filter_history() {
-        let indexed_items = vec![(json!({"id": "1"}), "1".to_string(), "t".to_string())];
+        let indexed_items = vec![crate::data::IndexedItem { value: json!({"id": "1"}), id: "1".to_string(), item_type: "t".to_string() }];
         let search_index = search_index::SearchIndex::build(&indexed_items);
         let theme = theme::Theme::Dracula.config();
         let history_path = std::path::PathBuf::from("/tmp/cbn_test_history.txt");
@@ -1608,11 +1655,11 @@ mod tests {
 
     #[test]
     fn test_handle_key_event_ignores_release_kind() {
-        let indexed_items = vec![(
-            json!({"id": "apple"}),
-            "apple".to_string(),
-            "fruit".to_string(),
-        )];
+        let indexed_items = vec![crate::data::IndexedItem {
+            value: json!({"id": "apple"}),
+            id: "apple".to_string(),
+            item_type: "fruit".to_string(),
+        }];
         let search_index = search_index::SearchIndex::build(&indexed_items);
         let theme = theme::Theme::Dracula.config();
 
@@ -1643,7 +1690,7 @@ mod tests {
 
     #[test]
     fn test_refresh_details_populates_annotated() {
-        let indexed_items = vec![(json!({"id": "1"}), "1".to_string(), "t".to_string())];
+        let indexed_items = vec![crate::data::IndexedItem { value: json!({"id": "1"}), id: "1".to_string(), item_type: "t".to_string() }];
         let search_index = search_index::SearchIndex::build(&indexed_items);
         let theme = theme::Theme::Dracula.config();
         let mut app = AppState::new(
@@ -1675,13 +1722,13 @@ mod tests {
     fn test_id_set_populated() {
         use serde_json::json;
         let indexed_items = vec![
-            (
-                json!({"id": "base_rifle"}),
-                "base_rifle".to_string(),
-                "t".to_string(),
-            ),
-            (json!({"id": "other"}), "other".to_string(), "t".to_string()),
-            (json!({"name": "no_id"}), "".to_string(), "t".to_string()),
+            crate::data::IndexedItem {
+                value: json!({"id": "base_rifle"}),
+                id: "base_rifle".to_string(),
+                item_type: "t".to_string(),
+            },
+            crate::data::IndexedItem { value: json!({"id": "other"}), id: "other".to_string(), item_type: "t".to_string() },
+            crate::data::IndexedItem { value: json!({"name": "no_id"}), id: "".to_string(), item_type: "t".to_string() },
         ];
         let search_index = search_index::SearchIndex::build(&indexed_items);
         let app = AppState::new(
@@ -1715,7 +1762,7 @@ mod tests {
         let indexed_items = (0..items)
             .map(|i| {
                 let id = format!("item_{}", i);
-                (json!({"id": id}), id, "t".to_string())
+                crate::data::IndexedItem { value: json!({"id": id.clone()}), id, item_type: "t".to_string() }
             })
             .collect::<Vec<_>>();
         let search_index = search_index::SearchIndex::build(&indexed_items);
