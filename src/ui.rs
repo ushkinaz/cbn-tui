@@ -115,16 +115,14 @@ fn compute_details_content_area(app: &AppState, area: Rect) -> Option<Rect> {
 
 /// Renders the scrollable list of game items.
 fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
+    // Borrow pre-computed display strings — no JSON traversal or String allocation per frame.
     let items: Vec<ListItem> = app
-        .filtered_indices
+        .cached_display
         .iter()
-        .map(|&idx| {
-            let (json, id, type_) = &app.indexed_items[idx];
-            let display_name = display_name_for_item(json, id, type_);
-
+        .map(|(display, type_prefix)| {
             let type_label = Line::from(vec![
-                Span::styled(format!("{} ", type_), app.theme.title),
-                Span::raw(display_name),
+                Span::styled(type_prefix.as_str(), app.theme.title),
+                Span::raw(display.as_str()),
             ]);
             ListItem::new(type_label)
         })
@@ -710,7 +708,7 @@ fn render_progress_modal(f: &mut Frame, app: &mut AppState) {
     }
 }
 
-fn display_name_for_item(json: &Value, id: &str, type_: &str) -> String {
+pub(crate) fn display_name_for_item(json: &Value, id: &str, type_: &str) -> String {
     if !id.is_empty() {
         return id.to_string();
     }

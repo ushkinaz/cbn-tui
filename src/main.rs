@@ -196,6 +196,10 @@ pub struct AppState {
     /// Index into indexed_items that is currently rendered in the details pane.
     /// Used to skip expensive JSON re-rendering when the same item is re-selected.
     cached_details_item_idx: Option<usize>,
+    /// Pre-computed (display_name, type_prefix) strings for the current filtered list.
+    /// Rebuilt only when filtered_indices changes, used by render_item_list via &str borrows
+    /// to avoid JSON traversal and String allocations on every frame.
+    pub cached_display: Vec<(String, String)>,
 }
 
 impl AppState {
@@ -271,6 +275,7 @@ impl AppState {
             source_dir,
             source_warnings: Vec::new(),
             cached_details_item_idx: None,
+            cached_display: Vec::new(),
         };
         app.load_history();
         app.refresh_details();
@@ -461,7 +466,25 @@ impl AppState {
         } else {
             self.list_state.select(Some(0));
         }
+        // Rebuild display cache whenever the filtered set changes.
+        self.rebuild_display_cache();
         self.refresh_details();
+    }
+
+    /// Rebuilds cached_display from the current filtered_indices.
+    /// Called only when the filter result set changes — not on every frame.
+    fn rebuild_display_cache(&mut self) {
+        self.cached_display = self
+            .filtered_indices
+            .iter()
+            .map(|&idx| {
+                let (json, id, type_) = &self.indexed_items[idx];
+                let display = ui::display_name_for_item(json, id, type_);
+                // Pre-format the type prefix once so render borrows it as &str.
+                let type_prefix = format!("{} ", type_);
+                (display, type_prefix)
+            })
+            .collect();
     }
 
     fn apply_new_dataset(
