@@ -98,6 +98,8 @@ pub struct AppState {
     pub indexed_items: Vec<(Value, String, String)>,
     /// Search index for fast lookups
     pub search_index: search_index::SearchIndex,
+    /// Set of purely IDs for O(1) existence checks (used for click navigation)
+    pub id_set: foldhash::HashSet<String>,
     /// Indices into indexed_items that match the current filter
     pub filtered_indices: Vec<usize>,
     /// List selection state managed by ratatui
@@ -180,6 +182,11 @@ impl AppState {
         history_path: std::path::PathBuf,
     ) -> Self {
         let filtered_indices: Vec<usize> = (0..indexed_items.len()).collect();
+        let id_set = indexed_items
+            .iter()
+            .filter(|(_, id, _)| !id.is_empty())
+            .map(|(_, id, _)| id.clone())
+            .collect();
         let mut list_state = ListState::default();
         if filtered_indices.is_empty() {
             list_state.select(None);
@@ -190,6 +197,7 @@ impl AppState {
         let mut app = Self {
             indexed_items,
             search_index,
+            id_set,
             filtered_indices,
             list_state,
             filter_text: String::new(),
@@ -391,8 +399,15 @@ impl AppState {
         let filter_text = self.filter_text.clone();
         let filter_cursor = self.filter_cursor.min(filter_text.chars().count());
 
+        let id_set = indexed_items
+            .iter()
+            .filter(|(_, id, _)| !id.is_empty())
+            .map(|(_, id, _)| id.clone())
+            .collect();
+
         self.indexed_items = indexed_items;
         self.search_index = search_index;
+        self.id_set = id_set;
         self.total_items = total_items;
         self.index_time_ms = index_time_ms;
         self.game_version = game_version;
@@ -725,6 +740,20 @@ fn handle_key_event(
     }
 }
 
+const ID_LIKE_FIELDS: &[&str] = &[
+    "copy-from",
+    "abstract",
+    "id",
+    "result",
+    "using",
+    "from",
+    "to",
+    "extends",
+    "looks_like",
+    "repairs_like",
+    "weapon_category",
+];
+
 fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
     let mut is_valid_target = false;
     let mut new_hover_id = None;
@@ -790,15 +819,26 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
         let escaped = unescaped_val.replace('\\', "\\\\").replace('\'', "\\'");
         let final_val = format!("'{}'", escaped);
 
-        let filter_addition = format!("{}:{}", target_path, final_val);
-        let current = app.filter_text.trim();
-        if current.is_empty() {
-            app.filter_text = filter_addition;
+        let is_id_like =
+            ID_LIKE_FIELDS.contains(&target_path.as_str()) || app.id_set.contains(&unescaped_val);
+
+        if is_id_like {
+            app.filter_text = format!("i:{}", final_val);
+            app.filter_cursor = app.filter_text.chars().count();
+            app.update_filter();
+            app.input_mode = InputMode::Normal;
         } else {
-            app.filter_text = format!("{} {}", current, filter_addition);
+            let filter_addition = format!("{}:{}", target_path, final_val);
+            let current = app.filter_text.trim();
+            if current.is_empty() {
+                app.filter_text = filter_addition;
+            } else {
+                app.filter_text = format!("{} {}", current, filter_addition);
+            }
+            app.filter_cursor = app.filter_text.chars().count();
+            app.update_filter();
+            app.input_mode = InputMode::Filtering;
         }
-        app.filter_cursor = app.filter_text.chars().count();
-        app.update_filter();
 
         transitioned = true;
     }
@@ -1403,5 +1443,35 @@ mod tests {
             .iter()
             .any(|line| line.iter().any(|s| s.span.content == "\"id\""));
         assert!(found_id);
+    }
+
+    #[test]
+    fn test_id_set_populated() {
+        use serde_json::json;
+        let indexed_items = vec![
+            (
+                json!({"id": "base_rifle"}),
+                "base_rifle".to_string(),
+                "t".to_string(),
+            ),
+            (json!({"id": "other"}), "other".to_string(), "t".to_string()),
+            (json!({"name": "no_id"}), "".to_string(), "t".to_string()),
+        ];
+        let search_index = search_index::SearchIndex::build(&indexed_items);
+        let app = AppState::new(
+            indexed_items,
+            search_index,
+            theme::Theme::Dracula.config(),
+            "v1".to_string(),
+            "v1".to_string(),
+            "v1".to_string(),
+            false,
+            3,
+            0.0,
+            std::path::PathBuf::from("/tmp/h.txt"),
+        );
+        assert!(app.id_set.contains("base_rifle"));
+        assert!(app.id_set.contains("other"));
+        assert_eq!(app.id_set.len(), 2);
     }
 }
