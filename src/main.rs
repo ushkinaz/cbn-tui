@@ -848,23 +848,19 @@ const ID_LIKE_FIELDS: &[&str] = &[
 
 const SCROLL_LINES: u16 = 3;
 
-fn rect_contains(area: ratatui::layout::Rect, column: u16, row: u16) -> bool {
-    column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height
-}
-
 fn pane_at(app: &AppState, column: u16, row: u16) -> Option<FocusPane> {
     if let Some(area) = app.filter_area
-        && rect_contains(area, column, row)
+        && area.contains((column, row).into())
     {
         return Some(FocusPane::Filter);
     }
     if let Some(area) = app.list_area
-        && rect_contains(area, column, row)
+        && area.contains((column, row).into())
     {
         return Some(FocusPane::List);
     }
     if let Some(area) = app.details_area
-        && rect_contains(area, column, row)
+        && area.contains((column, row).into())
     {
         return Some(FocusPane::Details);
     }
@@ -918,8 +914,14 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
                 FocusPane::List => {
                     if !app.filtered_indices.is_empty() {
                         for _ in 0..SCROLL_LINES {
-                            app.move_selection(if scroll_down { 1 } else { -1 });
+                            if scroll_down {
+                                app.list_state.select_next();
+                            } else {
+                                app.list_state.select_previous();
+                            }
                         }
+                        app.clamp_selection();
+                        app.refresh_details();
                         transitioned = true;
                     }
                 }
@@ -932,10 +934,7 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
         }
     }
 
-    if matches!(
-        mouse.kind,
-        event::MouseEventKind::Down(event::MouseButton::Left)
-    ) {
+    if let event::MouseEventKind::Down(event::MouseButton::Left) = mouse.kind {
         if let Some(pane) = hovered_pane {
             let previous_focus = app.focused_pane;
             let previous_mode = app.input_mode;
@@ -944,15 +943,10 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
                 transitioned = true;
             }
         }
-    }
 
-    if matches!(
-        mouse.kind,
-        event::MouseEventKind::Down(event::MouseButton::Left)
-    ) {
         if hovered_pane == Some(FocusPane::List)
             && let Some(content_area) = app.list_content_area
-            && rect_contains(content_area, mouse.column, mouse.row)
+            && content_area.contains((mouse.column, mouse.row).into())
             && !app.filtered_indices.is_empty()
         {
             let row = mouse.row.saturating_sub(content_area.y) as usize;
@@ -969,7 +963,7 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
 
         if hovered_pane == Some(FocusPane::Filter)
             && let Some(input_area) = app.filter_input_area
-            && rect_contains(input_area, mouse.column, mouse.row)
+            && input_area.contains((mouse.column, mouse.row).into())
         {
             let horizontal_scroll =
                 ui::filter_horizontal_scroll(&app.filter_text, app.filter_cursor, input_area.width);
@@ -981,59 +975,55 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
                 transitioned = true;
             }
         }
-    }
 
-    if matches!(
-        mouse.kind,
-        event::MouseEventKind::Down(event::MouseButton::Left)
-    ) && is_valid_target
-    {
-        let mut full_value = String::new();
-        if let Some(id) = target_id {
-            for line in &app.details_annotated {
-                for span in line {
-                    if span.span_id == Some(id) {
-                        full_value.push_str(&span.span.content);
+        if is_valid_target {
+            let mut full_value = String::new();
+            if let Some(id) = target_id {
+                for line in &app.details_annotated {
+                    for span in line {
+                        if span.span_id == Some(id) {
+                            full_value.push_str(&span.span.content);
+                        }
                     }
                 }
             }
-        }
 
-        let clean_val = full_value.trim();
-        let mut unescaped_val = clean_val.to_string();
-        if clean_val.starts_with('"') && clean_val.ends_with('"') && clean_val.len() >= 2 {
-            if let Ok(s) = serde_json::from_str::<String>(clean_val) {
-                unescaped_val = s;
-            } else {
-                unescaped_val = clean_val[1..clean_val.len() - 1].to_string();
+            let clean_val = full_value.trim();
+            let mut unescaped_val = clean_val.to_string();
+            if clean_val.starts_with('"') && clean_val.ends_with('"') && clean_val.len() >= 2 {
+                if let Ok(s) = serde_json::from_str::<String>(clean_val) {
+                    unescaped_val = s;
+                } else {
+                    unescaped_val = clean_val[1..clean_val.len() - 1].to_string();
+                }
             }
-        }
 
-        let escaped = unescaped_val.replace('\\', "\\\\").replace('\'', "\\'");
-        let final_val = format!("'{}'", escaped);
+            let escaped = unescaped_val.replace('\\', "\\\\").replace('\'', "\\'");
+            let final_val = format!("'{}'", escaped);
 
-        let is_id_like =
-            ID_LIKE_FIELDS.contains(&target_path.as_str()) || app.id_set.contains(&unescaped_val);
+            let is_id_like = ID_LIKE_FIELDS.contains(&target_path.as_str())
+                || app.id_set.contains(&unescaped_val);
 
-        if is_id_like {
-            app.filter_text = format!("i:{}", final_val);
-            app.filter_cursor = app.filter_text.chars().count();
-            app.update_filter();
-            app.focus_pane(FocusPane::Details);
-        } else {
-            let filter_addition = format!("{}:{}", target_path, final_val);
-            let current = app.filter_text.trim();
-            if current.is_empty() {
-                app.filter_text = filter_addition;
+            if is_id_like {
+                app.filter_text = format!("i:{}", final_val);
+                app.filter_cursor = app.filter_text.chars().count();
+                app.update_filter();
+                app.focus_pane(FocusPane::Details);
             } else {
-                app.filter_text = format!("{} {}", current, filter_addition);
+                let filter_addition = format!("{}:{}", target_path, final_val);
+                let current = app.filter_text.trim();
+                if current.is_empty() {
+                    app.filter_text = filter_addition;
+                } else {
+                    app.filter_text = format!("{} {}", current, filter_addition);
+                }
+                app.filter_cursor = app.filter_text.chars().count();
+                app.update_filter();
+                app.focus_pane(FocusPane::Filter);
             }
-            app.filter_cursor = app.filter_text.chars().count();
-            app.update_filter();
-            app.focus_pane(FocusPane::Filter);
-        }
 
-        transitioned = true;
+            transitioned = true;
+        }
     }
 
     transitioned

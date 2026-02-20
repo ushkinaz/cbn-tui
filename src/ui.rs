@@ -54,11 +54,9 @@ pub fn ui(f: &mut Frame, app: &mut AppState) {
         .split(chunks[0]);
 
     app.list_area = Some(main_chunks[0]);
-    app.list_content_area = Some(block_inner_area(main_chunks[0]));
     app.details_area = Some(main_chunks[1]);
     app.details_content_area = compute_details_content_area(app, main_chunks[1]);
     app.filter_area = Some(chunks[1]);
-    app.filter_input_area = Some(block_inner_area(chunks[1]));
 
     // Render item list
     render_item_list(f, app, main_chunks[0]);
@@ -81,34 +79,32 @@ pub fn ui(f: &mut Frame, app: &mut AppState) {
     }
 }
 
-fn block_inner_area(area: Rect) -> Rect {
-    Rect::new(
-        area.x.saturating_add(1),
-        area.y.saturating_add(1),
-        area.width.saturating_sub(2),
-        area.height.saturating_sub(2),
-    )
-}
-
 fn compute_details_content_area(app: &AppState, area: Rect) -> Option<Rect> {
-    let inner_area = block_inner_area(area);
+    let inner_area = area.inner(ratatui::layout::Margin::new(1, 1));
     if inner_area.width == 0 || inner_area.height == 0 {
         return None;
     }
 
-    let mut content_area = inner_area;
-    if app.get_selected_item().is_some() {
-        let header_height = 2;
-        let separator_y = inner_area.y + header_height;
-        if separator_y < area.y + area.height - 1 {
-            content_area = Rect::new(
-                inner_area.x,
-                separator_y + 1,
-                inner_area.width,
-                inner_area.height.saturating_sub(header_height + 1),
-            );
-        }
-    }
+    let constraints = if app.get_selected_item().is_some() {
+        vec![
+            Constraint::Length(2), // Metadata header
+            Constraint::Length(1), // Separator
+            Constraint::Min(0),    // Content
+        ]
+    } else {
+        vec![Constraint::Min(0)]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner_area);
+
+    let content_area = if app.get_selected_item().is_some() {
+        chunks[2]
+    } else {
+        chunks[0]
+    };
 
     if content_area.width > 0 && content_area.height > 0 {
         Some(content_area)
@@ -148,6 +144,8 @@ fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
         .title_alignment(Alignment::Left)
         .style(app.theme.list_normal);
 
+    app.list_content_area = Some(block.inner(area));
+
     let list = List::new(items)
         .block(block)
         .style(app.theme.list_normal)
@@ -176,12 +174,14 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
     let is_focused = app.focused_pane == FocusPane::Details;
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(if is_focused {
-            app.theme.border_selected
-        } else {
-            app.theme.border
-        })
-        .style(app.theme.border.bg(app.theme.background))
+        .style(
+            if is_focused {
+                app.theme.border_selected
+            } else {
+                app.theme.border
+            }
+            .bg(app.theme.background),
+        )
         .title(" JSON ")
         .title_alignment(Alignment::Left)
         .title_style(app.theme.title)
@@ -331,6 +331,7 @@ fn render_filter(f: &mut Frame, app: &mut AppState, area: Rect) {
         .title_style(app.theme.title);
 
     let inner = block.inner(area);
+    app.filter_input_area = Some(inner);
     let horizontal_scroll =
         filter_horizontal_scroll(&app.filter_text, app.filter_cursor, inner.width);
 
