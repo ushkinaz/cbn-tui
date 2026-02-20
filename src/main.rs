@@ -731,8 +731,8 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
     let mut target_path = String::new();
     let mut target_id = None;
 
-    if let Some(span) = ui::hit_test_details(app, mouse.column, mouse.row) {
-        if let Some(path) = &span.key_context {
+    if let Some(span) = ui::hit_test_details(app, mouse.column, mouse.row)
+        && let Some(path) = &span.key_context {
             let path_str = path.as_ref();
             let first_part = path_str.split('.').next().unwrap_or("");
             if !matches!(
@@ -746,27 +746,25 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
                 target_id = span.span_id;
             }
         }
-    }
 
     let mut transitioned = false;
 
     if matches!(
         mouse.kind,
         event::MouseEventKind::Moved | event::MouseEventKind::Drag(_)
-    ) {
-        if app.hovered_span_id != new_hover_id {
+    )
+        && app.hovered_span_id != new_hover_id {
             app.hovered_span_id = new_hover_id;
             app.details_wrapped_text =
                 ui::annotated_to_text(app.details_wrapped_annotated.clone(), app.hovered_span_id);
             transitioned = true;
         }
-    }
 
     if matches!(
         mouse.kind,
         event::MouseEventKind::Down(event::MouseButton::Left)
-    ) {
-        if is_valid_target {
+    )
+        && is_valid_target {
             let mut full_value = String::new();
             if let Some(id) = target_id {
                 for line in &app.details_annotated {
@@ -807,7 +805,6 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
 
             transitioned = true;
         }
-    }
 
     transitioned
 }
