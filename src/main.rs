@@ -11,7 +11,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Terminal, backend::CrosstermBackend, text::Text, widgets::ListState};
+use ratatui::{Terminal, backend::CrosstermBackend, widgets::ListState};
 use serde_json::Value;
 use std::fs;
 use std::io;
@@ -123,11 +123,18 @@ pub struct AppState {
     /// Time taken to build the index
     pub index_time_ms: f64,
     /// Scroll state for details pane
-    pub details_scroll_state: ScrollViewState,
-    /// Cached highlighted JSON text for the current selection
-    pub details_text: Text<'static>,
-    /// Number of lines in the current details_text
-    pub details_line_count: usize,
+    /// State for scrolling the details pane
+    pub details_scroll_state: tui_scrollview::ScrollViewState,
+    /// Annotated spans for the current details view
+    pub details_annotated: Vec<Vec<crate::ui::AnnotatedSpan>>,
+    /// Pre-wrapped annotated spans for the current content_width (used for rendering and hit-testing)
+    pub details_wrapped_annotated: Vec<Vec<crate::ui::AnnotatedSpan>>,
+    /// Cached Text object for the current details_wrapped_annotated
+    pub details_wrapped_text: ratatui::text::Text<'static>,
+    /// Width used for current details_wrapped_annotated
+    pub details_wrapped_width: u16,
+    /// Screen region of the JSON content area (set during render)
+    pub details_content_area: Option<ratatui::layout::Rect>,
     /// Flag to quit app
     pub should_quit: bool,
     /// Whether help overlay is visible
@@ -194,8 +201,11 @@ impl AppState {
             total_items,
             index_time_ms,
             details_scroll_state: ScrollViewState::default(),
-            details_text: Text::default(),
-            details_line_count: 0,
+            details_annotated: Vec::new(),
+            details_wrapped_annotated: Vec::new(),
+            details_wrapped_text: ratatui::text::Text::default(),
+            details_wrapped_width: 0,
+            details_content_area: None,
             should_quit: false,
             show_help: false,
             show_version_picker: false,
@@ -237,19 +247,28 @@ impl AppState {
         if let Some((json, _, _)) = self.get_selected_item() {
             match serde_json::to_string_pretty(json) {
                 Ok(json_str) => {
-                    self.details_text = ui::highlight_json(&json_str, &self.theme.json_style);
-                    self.details_line_count = self.details_text.lines.len();
+                    self.details_annotated =
+                        ui::highlight_json_annotated(&json_str, &self.theme.json_style);
                 }
                 Err(_) => {
-                    self.details_text = Text::from("Error formatting JSON");
-                    self.details_line_count = 1;
+                    self.details_annotated = vec![vec![crate::ui::AnnotatedSpan {
+                        span: ratatui::text::Span::raw("Error formatting JSON"),
+                        kind: crate::ui::JsonSpanKind::Whitespace,
+                        key_context: None,
+                    }]];
                 }
             }
         } else {
-            self.details_text = Text::from("Select an item to view details");
-            self.details_line_count = 1;
+            self.details_annotated = vec![vec![crate::ui::AnnotatedSpan {
+                span: ratatui::text::Span::raw("Select an item to view details"),
+                kind: crate::ui::JsonSpanKind::Whitespace,
+                key_context: None,
+            }]];
         }
         self.details_scroll_state = ScrollViewState::default();
+        self.details_wrapped_width = 0;
+        self.details_wrapped_annotated.clear();
+        self.details_wrapped_text = ratatui::text::Text::default();
     }
 
     /// Clamps the current list selection to valid bounds.
@@ -526,6 +545,15 @@ where
                 }
                 terminal.draw(|f| ui::ui(f, app))?;
             }
+            Event::Mouse(mouse) => {
+                let transitioned = handle_mouse_event(app, mouse);
+                if transitioned || app.pending_action.is_some() {
+                    if let Some(action) = app.pending_action.take() {
+                        handle_action(terminal, app, action)?;
+                    }
+                    terminal.draw(|f| ui::ui(f, app))?;
+                }
+            }
             Event::Resize(_, _) => {
                 terminal.draw(|f| ui::ui(f, app))?;
             }
@@ -690,6 +718,20 @@ fn handle_key_event(
             _ => {}
         },
     }
+}
+
+fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
+    if matches!(
+        mouse.kind,
+        event::MouseEventKind::Down(event::MouseButton::Left)
+    ) && ui::hit_test_details(app, mouse.column, mouse.row).is_some()
+    {
+        // Mouse interaction foundation is working!
+        // Actual Cmd+Click logic will be added in Phase 2 & 3.
+        return true;
+    }
+
+    false
 }
 
 fn load_initial_data<B: ratatui::backend::Backend>(
@@ -974,10 +1016,10 @@ fn build_version_entries(builds: Vec<data::BuildInfo>) -> Vec<VersionEntry> {
 }
 
 fn progress_ratio(progress: data::DownloadProgress) -> f64 {
-    if let Some(total) = progress.total {
-        if total > 0 {
-            return progress.downloaded as f64 / total as f64;
-        }
+    if let Some(total) = progress.total
+        && total > 0
+    {
+        return progress.downloaded as f64 / total as f64;
     }
 
     let downloaded = progress.downloaded as f64;
@@ -993,7 +1035,8 @@ mod tests {
     fn test_highlight_json() {
         let json_str = r#"{"id": "test", "val": 123, "active": true}"#;
         let style = theme::Theme::Dracula.config().json_style;
-        let highlighted = ui::highlight_json(json_str, &style);
+        let annotated = ui::highlight_json_annotated(json_str, &style);
+        let highlighted = ui::annotated_to_text(annotated);
 
         let mut found_id = false;
         let mut found_val = false;
@@ -1259,5 +1302,34 @@ mod tests {
 
         assert_eq!(app.input_mode, InputMode::Normal);
         assert!(app.filter_text.is_empty());
+    }
+
+    #[test]
+    fn test_refresh_details_populates_annotated() {
+        let indexed_items = vec![(json!({"id": "1"}), "1".to_string(), "t".to_string())];
+        let search_index = search_index::SearchIndex::build(&indexed_items);
+        let theme = theme::Theme::Dracula.config();
+        let mut app = AppState::new(
+            indexed_items,
+            search_index,
+            theme,
+            "v1".to_string(),
+            "v1".to_string(),
+            "v1".to_string(),
+            false,
+            1,
+            0.0,
+            std::path::PathBuf::from("/tmp/history.txt"),
+        );
+
+        app.refresh_details();
+        assert!(!app.details_annotated.is_empty());
+
+        // Check content structure - "id" should be present in some line metadata
+        let found_id = app
+            .details_annotated
+            .iter()
+            .any(|line| line.iter().any(|s| s.span.content == "\"id\""));
+        assert!(found_id);
     }
 }

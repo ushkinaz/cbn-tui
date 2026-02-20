@@ -5,15 +5,36 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, Clear, LineGauge, List, ListItem, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Wrap,
+        ScrollbarOrientation, ScrollbarState,
     },
 };
 use serde_json::Value;
+use std::rc::Rc;
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::theme;
 use crate::{AppState, InputMode};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Semantic role of a span in the rendered JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonSpanKind {
+    Key,          // e.g. "range"
+    StringValue,  // e.g. "base_furniture"
+    NumberValue,  // e.g. 60
+    BooleanValue, // true / false / null
+    Punctuation,  // { } [ ] , :
+    Whitespace,   // indentation
+}
+
+#[derive(Debug, Clone)]
+pub struct AnnotatedSpan {
+    pub span: Span<'static>,
+    pub kind: JsonSpanKind,
+    /// The JSON key this value belongs to, if the span is a value.
+    /// For keys themselves this is the key's own text.
+    pub key_context: Option<Rc<str>>,
+}
 
 /// Main UI entry point that renders the entire application layout.
 pub fn ui(f: &mut Frame, app: &mut AppState) {
@@ -143,17 +164,17 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
         let content_width = content_area.width.saturating_sub(horizontal_padding * 2);
 
         if content_width > 0 && content_area.height > 0 {
-            // Calculate the height required when text is wrapped to content_width
-            let mut wrapped_height = 0;
-            for line in &app.details_text.lines {
-                let line_width = line.width() as u16;
-                if line_width == 0 {
-                    wrapped_height += 1;
-                } else {
-                    wrapped_height += line_width.div_ceil(content_width);
-                }
+            app.details_content_area = Some(content_area);
+
+            // Re-wrap if width changed
+            if app.details_wrapped_width != content_width {
+                app.details_wrapped_annotated =
+                    wrap_annotated_lines(&app.details_annotated, content_width);
+                app.details_wrapped_text = annotated_to_text(app.details_wrapped_annotated.clone());
+                app.details_wrapped_width = content_width;
             }
-            let content_height = wrapped_height;
+
+            let content_height = app.details_wrapped_annotated.len() as u16;
 
             let mut scroll_view = ScrollView::new(Size::new(content_width, content_height))
                 .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
@@ -165,9 +186,7 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
 
             let content_rect = Rect::new(0, 0, content_width, content_height);
             scroll_view.render_widget(
-                Paragraph::new(app.details_text.clone())
-                    .style(app.theme.text)
-                    .wrap(Wrap { trim: false }),
+                Paragraph::new(app.details_wrapped_text.clone()).style(app.theme.text),
                 content_rect,
             );
 
@@ -696,8 +715,142 @@ fn name_value(value: &Value) -> Option<String> {
 
 /// Applies syntax highlighting to JSON text using theme-consistent colors.
 /// Returns a Text object for ratatui rendering.
-pub fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static> {
+/// Converts a matrix of AnnotatedSpans into a ratatui Text object.
+pub fn annotated_to_text(annotated: Vec<Vec<AnnotatedSpan>>) -> Text<'static> {
+    Text::from(
+        annotated
+            .into_iter()
+            .map(|line| Line::from(line.into_iter().map(|as_| as_.span).collect::<Vec<_>>()))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Wraps a matrix of AnnotatedSpans into lines that fit within the given width.
+/// Performs simple character-level wrapping.
+pub fn wrap_annotated_lines(lines: &[Vec<AnnotatedSpan>], width: u16) -> Vec<Vec<AnnotatedSpan>> {
+    let mut wrapped = Vec::new();
+    let width = width as usize;
+    if width == 0 {
+        return Vec::new();
+    }
+
+    for line in lines {
+        if line.is_empty() {
+            wrapped.push(Vec::new());
+            continue;
+        }
+
+        let mut current_wrapped_line = Vec::new();
+        let mut current_width = 0;
+
+        for annotated in line {
+            let mut content = &annotated.span.content[..];
+            while !content.is_empty() {
+                let remaining_width = width.saturating_sub(current_width);
+                if remaining_width == 0 {
+                    wrapped.push(current_wrapped_line);
+                    current_wrapped_line = Vec::new();
+                    current_width = 0;
+                    continue;
+                }
+
+                let mut fit_len = 0;
+                let mut fit_width = 0;
+                for c in content.chars() {
+                    let w = UnicodeWidthChar::width(c).unwrap_or(0);
+                    if fit_width + w > remaining_width {
+                        break;
+                    }
+                    fit_len += c.len_utf8();
+                    fit_width += w;
+                }
+
+                if fit_len > 0 {
+                    let part = &content[..fit_len];
+                    current_wrapped_line.push(AnnotatedSpan {
+                        span: Span::styled(part.to_string(), annotated.span.style),
+                        kind: annotated.kind,
+                        key_context: annotated.key_context.clone(),
+                    });
+                    current_width += fit_width;
+                    content = &content[fit_len..];
+                } else {
+                    // Even one character doesn't fit? This should only happen if width is extremely small.
+                    // Push current line and start new one.
+                    if !current_wrapped_line.is_empty() {
+                        wrapped.push(current_wrapped_line);
+                        current_wrapped_line = Vec::new();
+                        current_width = 0;
+                    } else {
+                        // Width is so small not even one char fits. Force-fit one char to avoid infinite loop.
+                        let first_char = content.chars().next().unwrap();
+                        let first_len = first_char.len_utf8();
+                        current_wrapped_line.push(AnnotatedSpan {
+                            span: Span::styled(
+                                content[..first_len].to_string(),
+                                annotated.span.style,
+                            ),
+                            kind: annotated.kind,
+                            key_context: annotated.key_context.clone(),
+                        });
+                        wrapped.push(current_wrapped_line);
+                        current_wrapped_line = Vec::new();
+                        current_width = 0;
+                        content = &content[first_len..];
+                    }
+                }
+            }
+        }
+        if !current_wrapped_line.is_empty() {
+            wrapped.push(current_wrapped_line);
+        }
+    }
+    wrapped
+}
+
+#[derive(Debug, Default)]
+struct JsonParserState {
+    stack: Vec<Option<Rc<str>>>,
+}
+
+impl JsonParserState {
+    fn new() -> Self {
+        Self { stack: vec![None] }
+    }
+
+    fn current_key(&self) -> Option<Rc<str>> {
+        self.stack.last().cloned().flatten()
+    }
+
+    fn update_key(&mut self, key: &str) {
+        if let Some(top) = self.stack.last_mut() {
+            *top = Some(Rc::from(key));
+        }
+    }
+
+    fn push_object(&mut self) {
+        self.stack.push(None);
+    }
+
+    fn push_array(&mut self) {
+        let current = self.current_key();
+        self.stack.push(current);
+    }
+
+    fn pop(&mut self) {
+        if self.stack.len() > 1 {
+            self.stack.pop();
+        }
+    }
+}
+
+/// Refactored version of highlight_json that also returns semantic metadata for each span.
+pub fn highlight_json_annotated(
+    json: &str,
+    json_style: &theme::JsonStyle,
+) -> Vec<Vec<AnnotatedSpan>> {
     let mut lines = Vec::new();
+    let mut state = JsonParserState::new();
 
     for line_str in json.lines() {
         let mut spans = Vec::new();
@@ -717,7 +870,11 @@ pub fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static
                     // This quote is escaped, treat it as a normal text and continue searching
                     let prefix = &remaining[..pos + 1];
                     if !prefix.is_empty() {
-                        spans.push(Span::raw(prefix.to_string()));
+                        spans.push(AnnotatedSpan {
+                            span: Span::raw(prefix.to_string()),
+                            kind: JsonSpanKind::StringValue,
+                            key_context: state.current_key(),
+                        });
                     }
                     remaining = &remaining[pos + 1..];
                     continue;
@@ -726,7 +883,7 @@ pub fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static
                 // Add prefix before quotes
                 let prefix = &remaining[..pos];
                 if !prefix.is_empty() {
-                    process_non_quoted(prefix, json_style, &mut spans);
+                    process_non_quoted(prefix, json_style, &mut spans, &mut state);
                 }
 
                 let rest = &remaining[pos + 1..];
@@ -752,47 +909,67 @@ pub fn highlight_json(json: &str, json_style: &theme::JsonStyle) -> Text<'static
                     let quoted = &rest[..ep];
                     let is_key = rest[ep + 1..].trim_start().starts_with(':');
 
-                    let styled = if is_key {
-                        Span::styled(
-                            format!("\"{}\"", quoted),
-                            Style::default()
-                                .fg(json_style.key)
-                                .add_modifier(Modifier::BOLD),
-                        )
+                    if is_key {
+                        state.update_key(quoted);
+                        spans.push(AnnotatedSpan {
+                            span: Span::styled(
+                                format!("\"{}\"", quoted),
+                                Style::default()
+                                    .fg(json_style.key)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            kind: JsonSpanKind::Key,
+                            key_context: state.current_key(),
+                        });
                     } else {
-                        Span::styled(
-                            format!("\"{}\"", quoted),
-                            Style::default().fg(json_style.string),
-                        )
-                    };
-
-                    spans.push(styled);
+                        spans.push(AnnotatedSpan {
+                            span: Span::styled(
+                                format!("\"{}\"", quoted),
+                                Style::default().fg(json_style.string),
+                            ),
+                            kind: JsonSpanKind::StringValue,
+                            key_context: state.current_key(),
+                        });
+                    }
                     remaining = &rest[ep + 1..];
                 } else {
-                    spans.push(Span::styled(
-                        remaining.to_string(),
-                        Style::default().fg(json_style.string),
-                    ));
+                    spans.push(AnnotatedSpan {
+                        span: Span::styled(
+                            remaining.to_string(),
+                            Style::default().fg(json_style.string),
+                        ),
+                        kind: JsonSpanKind::StringValue,
+                        key_context: state.current_key(),
+                    });
                     remaining = "";
                 }
             } else {
-                process_non_quoted(remaining, json_style, &mut spans);
+                process_non_quoted(remaining, json_style, &mut spans, &mut state);
                 remaining = "";
             }
         }
-        lines.push(Line::from(spans));
+        lines.push(spans);
     }
 
-    Text::from(lines)
+    lines
 }
 
-fn process_non_quoted(content: &str, json_style: &theme::JsonStyle, spans: &mut Vec<Span>) {
+fn process_non_quoted(
+    content: &str,
+    json_style: &theme::JsonStyle,
+    spans: &mut Vec<AnnotatedSpan>,
+    state: &mut JsonParserState,
+) {
     let mut remaining = content;
     while !remaining.is_empty() {
         let trimmed = remaining.trim_start();
         let start_offset = remaining.len() - trimmed.len();
         if start_offset > 0 {
-            spans.push(Span::raw(remaining[..start_offset].to_string()));
+            spans.push(AnnotatedSpan {
+                span: Span::raw(remaining[..start_offset].to_string()),
+                kind: JsonSpanKind::Whitespace,
+                key_context: None,
+            });
         }
 
         if trimmed.is_empty() {
@@ -800,28 +977,117 @@ fn process_non_quoted(content: &str, json_style: &theme::JsonStyle, spans: &mut 
         }
 
         let token_end = trimmed
-            .find(|c: char| c.is_whitespace() || c == ',' || c == '}' || c == ']' || c == ':')
+            .find(|c: char| {
+                c.is_whitespace()
+                    || c == ','
+                    || c == '}'
+                    || c == ']'
+                    || c == '{'
+                    || c == '['
+                    || c == ':'
+            })
             .map(|pos| if pos == 0 { 1 } else { pos })
             .unwrap_or(trimmed.len());
         let token = &trimmed[..token_end];
         let rest = &trimmed[token_end..];
 
-        let styled = if token == "true" || token == "false" || token == "null" {
-            Span::styled(token.to_string(), Style::default().fg(json_style.boolean))
+        let (styled, kind) = if token == "true" || token == "false" || token == "null" {
+            (
+                Span::styled(token.to_string(), Style::default().fg(json_style.boolean)),
+                JsonSpanKind::BooleanValue,
+            )
         } else if (token
             .chars()
             .all(|c| c.is_numeric() || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+'))
             && !token.is_empty()
             && token.chars().any(|c| c.is_numeric())
         {
-            Span::styled(token.to_string(), Style::default().fg(json_style.number))
+            (
+                Span::styled(token.to_string(), Style::default().fg(json_style.number)),
+                JsonSpanKind::NumberValue,
+            )
+        } else if token == ":"
+            || token == ","
+            || token == "{"
+            || token == "}"
+            || token == "["
+            || token == "]"
+        {
+            if token == "{" {
+                state.push_object();
+            } else if token == "[" {
+                state.push_array();
+            } else if token == "}" || token == "]" {
+                state.pop();
+            }
+            (Span::raw(token.to_string()), JsonSpanKind::Punctuation)
         } else {
-            Span::raw(token.to_string())
+            (
+                Span::raw(token.to_string()),
+                if token.trim().is_empty() {
+                    JsonSpanKind::Whitespace
+                } else {
+                    JsonSpanKind::Punctuation
+                },
+            )
         };
 
-        spans.push(styled);
+        let key_context = match kind {
+            JsonSpanKind::Key
+            | JsonSpanKind::StringValue
+            | JsonSpanKind::NumberValue
+            | JsonSpanKind::BooleanValue => state.current_key(),
+            _ => None,
+        };
+
+        spans.push(AnnotatedSpan {
+            span: styled,
+            kind,
+            key_context,
+        });
         remaining = rest;
     }
+}
+
+/// Given a click at (column, row), resolves the annotated span under the cursor.
+/// Returns None if the click is outside the details pane.
+pub fn hit_test_details(app: &AppState, column: u16, row: u16) -> Option<&AnnotatedSpan> {
+    let area = app.details_content_area?;
+    let horizontal_padding = 1;
+
+    // Strictly check bounds, excluding the horizontal gutters
+    let content_x_start = area.x + horizontal_padding;
+    let content_x_end = area.x + area.width - horizontal_padding;
+    if column < content_x_start
+        || column >= content_x_end
+        || row < area.y
+        || row >= area.y + area.height
+    {
+        return None;
+    }
+
+    // Translate screen global coordinates to details content area relative coordinates
+    let rel_x = column.saturating_sub(content_x_start);
+    // Ensure rel_y is within [0, area.height) relative to the content area
+    let rel_y = row.saturating_sub(area.y);
+
+    // Account for scroll offset
+    let scroll_offset = app.details_scroll_state.offset();
+    let content_y = (rel_y + scroll_offset.y) as usize;
+
+    // Details pane now uses pre-wrapped lines
+    if let Some(line) = app.details_wrapped_annotated.get(content_y) {
+        let mut current_x = 0;
+        for annotated in line {
+            let span_width = annotated.span.width() as u16;
+            if rel_x >= current_x && rel_x < current_x + span_width {
+                return Some(annotated);
+            }
+            current_x += span_width;
+        }
+    }
+
+    None
 }
 
 /// Calculates the terminal cell width offset for a given character index.
@@ -832,4 +1098,220 @@ pub fn filter_cursor_offset(text: &str, cursor: usize) -> u16 {
         .filter_map(|c| c.width())
         .map(|w| w as u16)
         .sum::<u16>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_annotated_spans_key_value_pair() {
+        let json_str = r#"  "range": 60"#;
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(json_str, &style);
+
+        assert_eq!(annotated.len(), 1);
+        let line = &annotated[0];
+
+        // Whitespace, Key("range"), Punctuation(:), Whitespace, NumberValue(60)
+        assert_eq!(line.len(), 5);
+        assert_eq!(line[0].kind, JsonSpanKind::Whitespace);
+        assert_eq!(line[1].kind, JsonSpanKind::Key);
+        assert_eq!(line[1].span.content, "\"range\"");
+        assert_eq!(line[2].kind, JsonSpanKind::Punctuation);
+        assert_eq!(line[2].span.content, ":");
+        assert_eq!(line[4].kind, JsonSpanKind::NumberValue);
+        assert_eq!(line[4].span.content, "60");
+        assert_eq!(line[4].key_context, Some(Rc::from("range")));
+    }
+
+    #[test]
+    fn test_annotated_spans_string_value() {
+        let json_str = r#""copy-from": "base_rifle""#;
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(json_str, &style);
+
+        let line = &annotated[0];
+        // Key, Punctuation, Whitespace, StringValue
+        assert_eq!(line[0].kind, JsonSpanKind::Key);
+        assert_eq!(line[3].kind, JsonSpanKind::StringValue);
+        assert_eq!(line[3].span.content, "\"base_rifle\"");
+        assert_eq!(line[3].key_context, Some(Rc::from("copy-from")));
+    }
+
+    #[test]
+    fn test_annotated_spans_boolean() {
+        let json_str = r#""active": true"#;
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(json_str, &style);
+
+        let line = &annotated[0];
+        assert_eq!(line[3].kind, JsonSpanKind::BooleanValue);
+        assert_eq!(line[3].span.content, "true");
+        assert_eq!(line[3].key_context, Some(Rc::from("active")));
+    }
+
+    #[test]
+    fn test_annotated_spans_nested_object() {
+        let json_str = "{ \"outer\": { \"inner\": 1 } }";
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(json_str, &style);
+
+        let line = &annotated[0];
+        // Find "inner" key and "1" value
+        let inner_key = line.iter().find(|s| s.span.content == "\"inner\"").unwrap();
+        let one_value = line.iter().find(|s| s.span.content == "1").unwrap();
+
+        assert_eq!(inner_key.kind, JsonSpanKind::Key);
+        assert_eq!(one_value.kind, JsonSpanKind::NumberValue);
+        assert_eq!(one_value.key_context, Some(Rc::from("inner")));
+    }
+
+    #[test]
+    fn test_annotated_spans_array() {
+        let json_str = r#""tags": ["a", "b"]"#;
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(json_str, &style);
+
+        let line = &annotated[0];
+        let val_a = line.iter().find(|s| s.span.content == "\"a\"").unwrap();
+        let val_b = line.iter().find(|s| s.span.content == "\"b\"").unwrap();
+
+        assert_eq!(val_a.kind, JsonSpanKind::StringValue);
+        assert_eq!(val_a.key_context, Some(Rc::from("tags")));
+        assert_eq!(val_b.kind, JsonSpanKind::StringValue);
+        assert_eq!(val_b.key_context, Some(Rc::from("tags")));
+    }
+
+    #[test]
+    fn test_to_text_preserves_rendering() {
+        let json_str = r#"{"id": "test", "num": 123}"#;
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(json_str, &style);
+        let text = annotated_to_text(annotated);
+
+        // Verification: ensure it still has some styled spans
+        let mut has_styles = false;
+        for line in &text.lines {
+            for span in &line.spans {
+                if span.style != Style::default() {
+                    has_styles = true;
+                }
+            }
+        }
+        assert!(has_styles);
+    }
+
+    #[test]
+    fn test_annotated_spans_escaped_quotes() {
+        let json_str = r#""text": "he said \"hello\"""#;
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(json_str, &style);
+
+        let line = &annotated[0];
+        let val = line
+            .iter()
+            .find(|s| s.kind == JsonSpanKind::StringValue && s.span.content.contains("hello"))
+            .unwrap();
+        assert_eq!(val.span.content, "\"he said \\\"hello\\\"\"");
+    }
+
+    #[test]
+    fn test_annotated_spans_nested_array_context() {
+        let json_str = r#"{ "arr": [{"id": 1}, "x"] }"#;
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(json_str, &style);
+
+        let mut val_1 = None;
+        let mut val_x = None;
+
+        for line in &annotated {
+            for span in line {
+                if span.span.content == "1" {
+                    val_1 = Some(span.clone());
+                }
+                if span.span.content == "\"x\"" {
+                    val_x = Some(span.clone());
+                }
+            }
+        }
+
+        let val_1 = val_1.unwrap();
+        let val_x = val_x.unwrap();
+
+        assert_eq!(val_1.key_context, Some(Rc::from("id")));
+        assert_eq!(val_x.key_context, Some(Rc::from("arr")));
+    }
+
+    #[test]
+    fn test_hit_test_outside_area_returns_none() {
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(r#"{"id": 1}"#, &style);
+        let wrapped = wrap_annotated_lines(&annotated, 80);
+
+        let mut app = create_test_app();
+        app.details_wrapped_annotated = wrapped;
+        app.details_content_area = Some(Rect::new(10, 10, 40, 10));
+
+        // Outside area (above)
+        assert!(hit_test_details(&app, 15, 5).is_none());
+        // Outside area (left)
+        assert!(hit_test_details(&app, 5, 15).is_none());
+        // In gutter (horizontal padding = 1)
+        assert!(hit_test_details(&app, 10, 15).is_none());
+    }
+
+    #[test]
+    fn test_hit_test_on_key_span() {
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(r#""id": 1"#, &style);
+        let wrapped = wrap_annotated_lines(&annotated, 80);
+
+        let mut app = create_test_app();
+        app.details_wrapped_annotated = wrapped;
+        app.details_content_area = Some(Rect::new(0, 0, 80, 20));
+
+        // Click on "id" (starts at x=1 because of horizontal padding)
+        let span = hit_test_details(&app, 2, 0).unwrap();
+        assert_eq!(span.kind, JsonSpanKind::Key);
+        assert_eq!(span.span.content, "\"id\"");
+    }
+
+    #[test]
+    fn test_hit_test_on_value_span() {
+        let style = crate::theme::Theme::Dracula.config().json_style;
+        let annotated = highlight_json_annotated(r#""id": 1"#, &style);
+        let wrapped = wrap_annotated_lines(&annotated, 80);
+
+        let mut app = create_test_app();
+        app.details_wrapped_annotated = wrapped;
+        app.details_content_area = Some(Rect::new(0, 0, 80, 20));
+
+        // Click on "1"
+        // "id": 1 is 4+2+1+1 = 8 chars
+        // "i" is at x=2, "d" at x=3, ":" at x=5, " " at x=6, "1" at x=7
+        let span = hit_test_details(&app, 7, 0).unwrap();
+        assert_eq!(span.kind, JsonSpanKind::NumberValue);
+        assert_eq!(span.span.content, "1");
+        assert_eq!(span.key_context, Some(Rc::from("id")));
+    }
+
+    fn create_test_app() -> crate::AppState {
+        use serde_json::json;
+        let indexed_items = vec![(json!({"id": "1"}), "1".to_string(), "t".to_string())];
+        let search_index = crate::search_index::SearchIndex::build(&indexed_items);
+        let theme = crate::theme::Theme::Dracula.config();
+        crate::AppState::new(
+            indexed_items,
+            search_index,
+            theme,
+            "v1".to_string(),
+            "v1".to_string(),
+            "v1".to_string(),
+            false,
+            1,
+            0.0,
+            std::path::PathBuf::from("/tmp/history.txt"),
+        )
+    }
 }
