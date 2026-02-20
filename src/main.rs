@@ -682,6 +682,15 @@ fn handle_key_event(
         return;
     }
 
+    if (modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::SUPER))
+        && code == KeyCode::Char('r')
+    {
+        if app.source_dir.is_some() {
+            app.pending_action = Some(AppAction::ReloadSource);
+        }
+        return;
+    }
+
     if app.show_help {
         if matches!(code, KeyCode::Char('?') | KeyCode::Esc) {
             app.show_help = false;
