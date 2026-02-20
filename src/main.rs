@@ -1004,7 +1004,10 @@ where
 {
     let root = if version == "local" && app.source_dir.is_some() {
         let source_dir = app.source_dir.clone().unwrap();
-        app.start_progress("Loading local data", &["Loading files", "Indexing"]);
+        app.start_progress(
+            "Loading local data",
+            &["Loading files", "Parsing", "Indexing"],
+        );
         terminal.draw(|f| ui::ui(f, app))?;
         let root = data::load_from_source(&source_dir, &mut app.source_warnings)?;
         app.finish_stage("Loading files");
@@ -1022,15 +1025,10 @@ where
         let mut last_draw = Instant::now();
         let mut draw_error: Option<anyhow::Error> = None;
         let path = data::fetch_game_data_with_progress(version, force, |progress| {
-            let ratio = data::DownloadProgress {
+            let ratio = progress_ratio(data::DownloadProgress {
                 downloaded: progress.downloaded,
                 total: progress.total,
-            };
-            let ratio = if let Some(t) = ratio.total {
-                ratio.downloaded as f64 / t as f64
-            } else {
-                0.0
-            };
+            });
             let elapsed_ok = last_draw.elapsed() >= Duration::from_millis(120);
             let ratio_ok = (ratio - last_ratio).abs() >= 0.01;
             let should_draw = if progress.total.is_some() {
