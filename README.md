@@ -28,6 +28,7 @@ And then I had had enough.
 
 ## ✨ Features
 
+- **Click your way**: Click on a property value to filter by it. Ctrl-click filters by that object's ID.
 - **Freaking Fast**: Instantly browse and search through thousands of game objects.
 - **Up to date**: Automatically download and cache game [data](https://data.cataclysmbn-guide.com/) directly.
 - **Advanced Search Syntax**: Powerful filtering with support for specific fields and combined logic:
