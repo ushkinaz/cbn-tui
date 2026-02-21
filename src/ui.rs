@@ -186,7 +186,7 @@ fn render_details(f: &mut Frame, app: &mut AppState, area: Rect) {
         .title_alignment(Alignment::Left)
         .title_style(app.theme.title)
         .title_bottom(if is_focused {
-            Line::from(" ↑/↓ scroll • Tab cycle • Esc back ").right_aligned()
+            Line::from(" ↑/↓ scroll • Tab cycle").right_aligned()
         } else {
             Line::from("").right_aligned()
         });
@@ -334,7 +334,7 @@ fn render_filter(f: &mut Frame, app: &mut AppState, area: Rect) {
         .title(" Filter (/) ")
         .title_style(app.theme.title)
         .title_bottom(if is_focused {
-            Line::from(" ↑/↓ history • Tab cycle • Esc clear ").right_aligned()
+            Line::from(" ↑/↓ history • Tab cycle").right_aligned()
         } else {
             Line::from("")
         });

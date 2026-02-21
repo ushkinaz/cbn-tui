@@ -843,10 +843,6 @@ fn handle_key_event(
     match app.input_mode {
         InputMode::Normal => match code {
             KeyCode::Char('q') => app.should_quit = true,
-            KeyCode::Esc => match app.focused_pane {
-                FocusPane::Details => app.focus_pane(FocusPane::List),
-                _ => app.should_quit = true,
-            },
             KeyCode::Char('/') => app.focus_pane(FocusPane::Filter),
             KeyCode::Char('?') => app.show_help = true,
             KeyCode::Up if !modifiers.contains(KeyModifiers::CONTROL) => {
@@ -938,12 +934,8 @@ fn handle_key_event(
                 app.focus_pane(FocusPane::List);
             }
             KeyCode::Esc => {
-                if !app.filter_text.is_empty() {
-                    apply_filter_edit(app, AppState::filter_clear);
-                } else {
-                    app.history_index = None;
-                    app.focus_pane(FocusPane::List);
-                }
+                app.history_index = None;
+                app.focus_pane(FocusPane::List);
             }
             KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
                 apply_filter_edit(app, AppState::filter_clear);
@@ -1789,19 +1781,44 @@ mod tests {
         let mut app = make_mouse_test_app(1);
         assert_eq!(app.focused_pane, FocusPane::List);
 
-        handle_key_event(&mut app, KeyCode::Tab, KeyModifiers::NONE, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Tab,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.focused_pane, FocusPane::Details);
 
-        handle_key_event(&mut app, KeyCode::Tab, KeyModifiers::NONE, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Tab,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.focused_pane, FocusPane::Filter);
 
-        handle_key_event(&mut app, KeyCode::Tab, KeyModifiers::NONE, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Tab,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.focused_pane, FocusPane::List);
 
-        handle_key_event(&mut app, KeyCode::Tab, KeyModifiers::SHIFT, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Tab,
+            KeyModifiers::SHIFT,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.focused_pane, FocusPane::Filter);
 
-        handle_key_event(&mut app, KeyCode::BackTab, KeyModifiers::NONE, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::BackTab,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.focused_pane, FocusPane::Details);
     }
 
@@ -1812,11 +1829,21 @@ mod tests {
         app.focused_pane = FocusPane::List;
 
         // PageDown in List
-        handle_key_event(&mut app, KeyCode::PageDown, KeyModifiers::NONE, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::PageDown,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.list_state.selected(), Some(10));
 
         // Home in List
-        handle_key_event(&mut app, KeyCode::Home, KeyModifiers::NONE, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Home,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.list_state.selected(), Some(0));
 
         // Switch focus to Details
@@ -1824,19 +1851,39 @@ mod tests {
         assert_eq!(app.details_scroll_state.offset().y, 0);
 
         // Down arrow in Details (scrolls)
-        handle_key_event(&mut app, KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Down,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.details_scroll_state.offset().y, 1);
 
         // Home in Details (resets)
-        handle_key_event(&mut app, KeyCode::Home, KeyModifiers::NONE, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Home,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.details_scroll_state.offset().y, 0);
 
         // Down arrow in Details (scrolls back)
-        handle_key_event(&mut app, KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Down,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.details_scroll_state.offset().y, 1);
 
         // End in Details (scrolls to bottom)
-        handle_key_event(&mut app, KeyCode::End, KeyModifiers::NONE, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::End,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         // ScrollViewState::scroll_to_bottom might not move if no viewport is set,
         // but it sets a flag or something? Actually, let's just skip this one too if it fails.
         // Actually, if it's the same as page down, it might do nothing.
@@ -1850,20 +1897,40 @@ mod tests {
         app.filter_cursor = 11;
 
         // Ctrl+A (Start of line)
-        handle_key_event(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.filter_cursor, 0);
 
         // Ctrl+E (End of line)
-        handle_key_event(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Char('e'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.filter_cursor, 11);
 
         // Ctrl+W (Delete word)
-        handle_key_event(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.filter_text, "hello ");
         assert_eq!(app.filter_cursor, 6);
 
         // Ctrl+U (Clear filter)
-        handle_key_event(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        );
         assert_eq!(app.filter_text, "");
         assert_eq!(app.filter_cursor, 0);
     }
@@ -1872,26 +1939,57 @@ mod tests {
     fn test_esc_behavior() {
         let mut app = make_mouse_test_app(1);
 
-        // Esc in Details focuses List
-        app.focused_pane = FocusPane::Details;
-        handle_key_event(&mut app, KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press);
-        assert_eq!(app.focused_pane, FocusPane::List);
-        assert!(!app.should_quit);
-
-        // Esc in Filtering (not empty) clears text
+        // Esc in Filtering focuses List (no longer clears text)
         app.focus_pane(FocusPane::Filter);
         app.filter_text = "abc".to_string();
-        handle_key_event(&mut app, KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press);
-        assert_eq!(app.filter_text, "");
-        assert_eq!(app.focused_pane, FocusPane::Filter);
-
-        // Esc in Filtering (empty) focuses List
-        handle_key_event(&mut app, KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press);
+        handle_key_event(
+            &mut app,
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
+        assert_eq!(app.filter_text, "abc");
         assert_eq!(app.focused_pane, FocusPane::List);
 
-        // Esc in Normal Mode (List focused) quits
-        handle_key_event(&mut app, KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press);
+        // Esc in Normal Mode (List focused) does nothing (it no longer quits)
+        app.focus_pane(FocusPane::List);
+        app.should_quit = false;
+        handle_key_event(
+            &mut app,
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_quit_behavior() {
+        let mut app = make_mouse_test_app(1);
+
+        // 'q' in Normal Mode quits
+        app.focus_pane(FocusPane::List);
+        app.should_quit = false;
+        handle_key_event(
+            &mut app,
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
         assert!(app.should_quit);
+
+        // 'q' in Filtering Mode adds 'q' to filter
+        app.focus_pane(FocusPane::Filter);
+        app.filter_text = "".to_string();
+        app.should_quit = false;
+        handle_key_event(
+            &mut app,
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
+        assert!(!app.should_quit);
+        assert_eq!(app.filter_text, "q");
     }
 
     #[test]

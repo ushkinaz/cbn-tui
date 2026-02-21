@@ -32,13 +32,13 @@ Terminal User Interface (TUI) browser for **Cataclysm: Bright Nights** JSON data
 ### Navigation (Context-Aware)
 *Arrows, PageUp/Down, and Home/End act on the currently focused pane.*
 
-| Key                   | Action                                      |
-|-----------------------|---------------------------------------------|
-| `/`                   | Focus Filter Input                          |
-| `↑` / `↓`             | Move selection (List) or Scroll (Details)   |
-| `PageUp` / `PageDown` | Page scroll List or Details                 |
-| `Home` / `End`        | Go to start / end of List or Details        |
-| `Esc`                 | Return focus to List (from Details) or Quit |
+| Key                   | Action                                    |
+|-----------------------|-------------------------------------------|
+| `/`                   | Focus Filter Input                        |
+| `↑` / `↓`             | Move selection (List) or Scroll (Details) |
+| `PageUp` / `PageDown` | Page scroll List or Details               |
+| `Home` / `End`        | Go to start / end of List or Details      |
+| `Esc`                 | Return focus to List (from Filter)        |
 
 ### Filter Input
 | Key                 | Action                                    |
@@ -48,7 +48,6 @@ Terminal User Interface (TUI) browser for **Cataclysm: Bright Nights** JSON data
 | `Ctrl+W`            | Delete last word                          |
 | `Ctrl+A` / `Ctrl+E` | Move to start / end of line               |
 | `Enter`             | Confirm search and focus List             |
-| `Esc`               | Clear filter (if not empty) or focus List |
 
 ## 🚀 Usage
 
