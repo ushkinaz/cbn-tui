@@ -80,5 +80,24 @@ cbn-tui --source path/to/cataclysm-data/
 - **List available game versions**: `cbn-tui --game-versions`
 - **Force refresh cached data**: `cbn-tui --game stable --force`
 
+## 🌐 Web Version (Ratzilla)
+
+The repo now includes a WebAssembly build that reuses the same `ratatui` UI/state logic through [`ratzilla`](https://github.com/ratatui/ratzilla/).
+
+### Run in browser
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install trunk
+trunk serve --features web
+```
+
+Open `http://localhost:8080`.
+
+### Notes
+- Uses the same keyboard-centric navigation, filtering, and clickable JSON filtering UX.
+- Data is fetched in-browser from `https://data.cataclysmbn-guide.com/data/<version>/all.json`.
+- Version picker in web currently includes `stable` and `nightly`.
+
 ## 📄 License
 Distributed under the MIT License. See `LICENSE` for more information.
