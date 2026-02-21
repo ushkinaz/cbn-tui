@@ -1,4 +1,4 @@
-use crate::data::IndexedItem;
+use crate::model::IndexedItem;
 use foldhash::{HashMap, HashSet};
 use serde_json::Value;
 
@@ -35,49 +35,45 @@ impl SearchIndex {
     /// 3. Using `foldhash` for faster hashing performance.
     pub fn build(items: &[IndexedItem]) -> Self {
         let mut index = Self::new();
-
         for (idx, item) in items.iter().enumerate() {
-            let json = &item.value;
-            let id = &item.id;
-            let type_ = &item.item_type;
+            index.index_item(idx, item);
+        }
+        index
+    }
 
-            // Index primary search fields
-            if !id.is_empty() {
-                index
-                    .by_id
-                    .entry(id.to_lowercase())
-                    .or_default()
-                    .insert(idx);
-            } else if let Some(abstr) = json.get("abstract").and_then(|v| v.as_str()) {
-                index
-                    .by_id
-                    .entry(abstr.to_lowercase())
-                    .or_default()
-                    .insert(idx);
-            }
+    /// Indexes a single item into an existing index.
+    ///
+    /// Used by the web runtime to drive indexing item-by-item with async
+    /// browser yields between batches, without duplicating per-item logic.
+    pub fn index_item(&mut self, idx: usize, item: &IndexedItem) {
+        let json = &item.value;
+        let id = &item.id;
+        let type_ = &item.item_type;
 
-            if !type_.is_empty() {
-                index
-                    .by_type
-                    .entry(type_.to_lowercase())
-                    .or_default()
-                    .insert(idx);
-            }
-
-            if let Some(category) = json.get("category").and_then(|v| v.as_str()) {
-                index
-                    .by_category
-                    .entry(category.to_lowercase())
-                    .or_default()
-                    .insert(idx);
-            }
-
-            // Recursively index EVERYTHING in the JSON. Note: This covers the fields above,
-            // so we don't need to explicitly call index_words for them here.
-            Self::index_value_recursive(&mut index.word_index, json, idx);
+        if !id.is_empty() {
+            self.by_id.entry(id.to_lowercase()).or_default().insert(idx);
+        } else if let Some(abstr) = json.get("abstract").and_then(|v| v.as_str()) {
+            self.by_id
+                .entry(abstr.to_lowercase())
+                .or_default()
+                .insert(idx);
         }
 
-        index
+        if !type_.is_empty() {
+            self.by_type
+                .entry(type_.to_lowercase())
+                .or_default()
+                .insert(idx);
+        }
+
+        if let Some(category) = json.get("category").and_then(|v| v.as_str()) {
+            self.by_category
+                .entry(category.to_lowercase())
+                .or_default()
+                .insert(idx);
+        }
+
+        Self::index_value_recursive(&mut self.word_index, json, idx);
     }
 
     pub fn build_with_progress<F>(items: &[IndexedItem], mut on_progress: F) -> Self
@@ -88,41 +84,7 @@ impl SearchIndex {
         let total = items.len();
 
         for (idx, item) in items.iter().enumerate() {
-            let json = &item.value;
-            let id = &item.id;
-            let type_ = &item.item_type;
-
-            if !id.is_empty() {
-                index
-                    .by_id
-                    .entry(id.to_lowercase())
-                    .or_default()
-                    .insert(idx);
-            } else if let Some(abstr) = json.get("abstract").and_then(|v| v.as_str()) {
-                index
-                    .by_id
-                    .entry(abstr.to_lowercase())
-                    .or_default()
-                    .insert(idx);
-            }
-
-            if !type_.is_empty() {
-                index
-                    .by_type
-                    .entry(type_.to_lowercase())
-                    .or_default()
-                    .insert(idx);
-            }
-
-            if let Some(category) = json.get("category").and_then(|v| v.as_str()) {
-                index
-                    .by_category
-                    .entry(category.to_lowercase())
-                    .or_default()
-                    .insert(idx);
-            }
-
-            Self::index_value_recursive(&mut index.word_index, json, idx);
+            index.index_item(idx, item);
 
             if idx % 250 == 0 || idx + 1 == total {
                 on_progress(idx + 1, total);
@@ -183,7 +145,7 @@ impl SearchIndex {
         }
     }
 
-    /// Fast lookup in a specific field index 
+    /// Fast lookup in a specific field index
     /// Returns indices of items matching the pattern
     pub fn lookup_field(
         &self,

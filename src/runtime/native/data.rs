@@ -1,92 +1,18 @@
 use anyhow::Result;
-use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::time::Duration;
 use walkdir::WalkDir;
 
-/// Core metadata for a game build, flattened from various JSON sources.
-#[derive(Debug, Clone)]
-pub struct BuildInfo {
-    /// The unique build identifier (e.g., "2024-01-01" or "v0.9.1").
-    pub build_number: String,
-    /// The human-readable tag name (often matches build_number or is more descriptive).
-    pub tag_name: String,
-    /// Whether this is a prerelease/nightly build.
-    pub prerelease: bool,
-    /// ISO 8601 creation timestamp.
-    pub created_at: String,
-}
-
-/// Represents an indexed item holding its original value and resolved primary fields.
-#[derive(Debug, Clone)]
-pub struct IndexedItem {
-    /// The actual JSON data of the item.
-    pub value: Value,
-    /// The resolved string ID of the item.
-    pub id: String,
-    /// The resolved type string of the item.
-    pub item_type: String,
-}
-
-/// The root structure of the game data JSON (`all.json`).
-#[derive(Debug, Deserialize)]
-pub struct Root {
-    /// Flattened build metadata.
-    #[serde(flatten)]
-    pub build: BuildInfo,
-    /// The actual game data items.
-    pub data: Vec<Value>,
-}
+// Shared model types — defined once in model.rs, re-exported here for
+// callers that only depend on data.rs.
+pub use crate::model::{BuildInfo, IndexedItem, Root};
 
 #[derive(Debug, Clone, Copy)]
 pub struct DownloadProgress {
     pub downloaded: u64,
     pub total: Option<u64>,
-}
-
-impl<'de> Deserialize<'de> for BuildInfo {
-    /// Custom deserializer to flatten the potential nesting of `release.tag_name`
-    /// from Github-style JSON responses into a flat domain model.
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Proxy {
-            build_number: String,
-            prerelease: Option<bool>,
-            created_at: Option<String>,
-            release: Option<Value>,
-        }
-
-        let proxy = Proxy::deserialize(deserializer)?;
-
-        let mut tag_name = proxy.build_number.clone();
-        let mut prerelease = proxy.prerelease.unwrap_or(false);
-        let mut created_at = proxy.created_at.unwrap_or_default();
-
-        // Extract flattened fields from the optional nested `release` object
-        if let Some(release) = proxy.release {
-            if let Some(tag) = release.get("tag_name").and_then(|v| v.as_str()) {
-                tag_name = tag.to_string();
-            }
-            if let Some(pre) = release.get("prerelease").and_then(|v| v.as_bool()) {
-                prerelease = pre;
-            }
-            if let Some(created) = release.get("created_at").and_then(|v| v.as_str()) {
-                created_at = created.to_string();
-            }
-        }
-
-        Ok(BuildInfo {
-            build_number: proxy.build_number,
-            tag_name,
-            prerelease,
-            created_at,
-        })
-    }
 }
 
 pub fn get_cache_dir() -> Result<std::path::PathBuf> {
@@ -262,31 +188,14 @@ pub fn load_from_source(source_dir: &str, warnings: &mut Vec<String>) -> Result<
         .filter(|e| !e.file_type().is_dir())
     {
         if let Some(ext) = entry.path().extension()
-            && ext == "json" {
-                match fs::File::open(entry.path()) {
-                    Ok(file) => {
-                        let reader = io::BufReader::new(file);
-                        match serde_json::from_reader::<_, Value>(reader) {
-                            Ok(Value::Array(arr)) => {
-                                for obj in arr {
-                                    if let Some(id_val) = obj.get("id").and_then(|v| v.as_str()) {
-                                        let type_val =
-                                            obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                                        if !type_id_set
-                                            .insert((type_val.to_string(), id_val.to_string()))
-                                        {
-                                            warnings.push(format!(
-                                                "Duplicate ID shadowed: {} ({}) in {}",
-                                                id_val,
-                                                type_val,
-                                                entry.path().display()
-                                            ));
-                                        }
-                                    }
-                                    data.push(obj);
-                                }
-                            }
-                            Ok(Value::Object(obj)) => {
+            && ext == "json"
+        {
+            match fs::File::open(entry.path()) {
+                Ok(file) => {
+                    let reader = io::BufReader::new(file);
+                    match serde_json::from_reader::<_, Value>(reader) {
+                        Ok(Value::Array(arr)) => {
+                            for obj in arr {
                                 if let Some(id_val) = obj.get("id").and_then(|v| v.as_str()) {
                                     let type_val =
                                         obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -301,28 +210,44 @@ pub fn load_from_source(source_dir: &str, warnings: &mut Vec<String>) -> Result<
                                         ));
                                     }
                                 }
-                                data.push(Value::Object(obj));
-                            }
-                            Ok(_) => {
-                                warnings.push(format!(
-                                    "File {} contains neither array nor object",
-                                    entry.path().display()
-                                ));
-                            }
-                            Err(e) => {
-                                warnings.push(format!(
-                                    "Parse error in {}: {}",
-                                    entry.path().display(),
-                                    e
-                                ));
+                                data.push(obj);
                             }
                         }
-                    }
-                    Err(e) => {
-                        warnings.push(format!("Failed to read {}: {}", entry.path().display(), e));
+                        Ok(Value::Object(obj)) => {
+                            if let Some(id_val) = obj.get("id").and_then(|v| v.as_str()) {
+                                let type_val =
+                                    obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                if !type_id_set.insert((type_val.to_string(), id_val.to_string())) {
+                                    warnings.push(format!(
+                                        "Duplicate ID shadowed: {} ({}) in {}",
+                                        id_val,
+                                        type_val,
+                                        entry.path().display()
+                                    ));
+                                }
+                            }
+                            data.push(Value::Object(obj));
+                        }
+                        Ok(_) => {
+                            warnings.push(format!(
+                                "File {} contains neither array nor object",
+                                entry.path().display()
+                            ));
+                        }
+                        Err(e) => {
+                            warnings.push(format!(
+                                "Parse error in {}: {}",
+                                entry.path().display(),
+                                e
+                            ));
+                        }
                     }
                 }
+                Err(e) => {
+                    warnings.push(format!("Failed to read {}: {}", entry.path().display(), e));
+                }
             }
+        }
     }
 
     if data.is_empty() {

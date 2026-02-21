@@ -12,8 +12,8 @@ use serde_json::Value;
 use std::rc::Rc;
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
+use crate::app_core::state::{AppState, FocusPane, InputMode, ProgressStage};
 use crate::theme;
-use crate::{AppState, FocusPane, InputMode};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Semantic role of a span in the rendered JSON.
@@ -416,10 +416,7 @@ fn render_status_bar_shortcuts(f: &mut Frame, app: &mut AppState, area: Rect) {
 
 fn render_status_bar_operational(f: &mut Frame, app: &mut AppState, area: Rect) {
     let bar_style = app.theme.text.add_modifier(Modifier::DIM);
-    let mut spans = vec![Span::raw(format!(
-        "Objects: {}",
-        app.total_items
-    ))];
+    let mut spans = vec![Span::raw(format!("Objects: {}", app.total_items))];
     if !app.source_warnings.is_empty() {
         spans.push(Span::raw(" |"));
         spans.push(Span::styled(
@@ -442,10 +439,7 @@ fn render_status_bar_operational(f: &mut Frame, app: &mut AppState, area: Rect) 
 
 fn render_status_bar_versions(f: &mut Frame, app: &mut AppState, area: Rect) {
     let bar_style = app.theme.text.add_modifier(Modifier::DIM);
-    let versions = Line::from(format!(
-        "Game: {}",
-        app.game_version
-    ));
+    let versions = Line::from(format!("Game: {}", app.game_version));
 
     f.render_widget(
         Paragraph::new(versions)
@@ -670,7 +664,7 @@ fn render_progress_modal(f: &mut Frame, app: &mut AppState) {
             .progress_stages
             .get(idx)
             .cloned()
-            .unwrap_or_else(|| crate::ProgressStage {
+            .unwrap_or_else(|| ProgressStage {
                 label: "Working".to_string(),
                 ratio: 0.0,
                 done: false,
@@ -939,12 +933,13 @@ impl JsonParserState {
         let mut path = String::new();
         for entry in &self.stack {
             if let Some(k) = entry
-                && !k.is_empty() {
-                    if !path.is_empty() {
-                        path.push('.');
-                    }
-                    path.push_str(k);
+                && !k.is_empty()
+            {
+                if !path.is_empty() {
+                    path.push('.');
                 }
+                path.push_str(k);
+            }
         }
         self.current_path_rc = if path.is_empty() {
             None
@@ -1469,7 +1464,7 @@ mod tests {
 
     fn create_test_app() -> AppState {
         use serde_json::json;
-        let indexed_items = vec![crate::data::IndexedItem {
+        let indexed_items = vec![crate::model::IndexedItem {
             value: json!({"id": "1"}),
             id: "1".to_string(),
             item_type: "t".to_string(),
