@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### New Features
+
+- **Local Source Mode**: Support for loading and browsing multiple JSON files from a local directory (In-source mode).
+- **Interactive JSON Navigation**: Navigate through game data by clicking on IDs or specific fields within the JSON details pane to instantly filter and jump to related items.
+- **Comprehensive Mouse Support**: Full interactivity with the TUI
+
+### Performance
+
+- **Low-latency UI**: Significant optimizations to rendering and JSON highlighting, resulting in a more responsive interface and zero flickering during navigation.
+- **Caching Improvements**: Implemented eager caching for display strings and rendered details to eliminate redundant calculations.
+
+### Bugfixes
+
+- Fixed an issue where the filter input became uneditable when the text exceeded the visible width.
+- Fixed background color inconsistencies across different themes.
+ 
+
 ## [0.3.1] - 2026-02-19
 
 ### Bugfixes
