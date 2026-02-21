@@ -137,7 +137,7 @@ fn render_item_list(f: &mut Frame, app: &mut AppState, area: Rect) {
             app.theme.border
         })
         .title_style(app.theme.title)
-        .title(format!(" Items ({}) ", app.filtered_indices.len()))
+        .title(format!(" Objects ({}) ", app.filtered_indices.len()))
         .title_bottom(if is_focused {
             Line::from(" ↑/↓ move • Tab cycle ").right_aligned()
         } else {
@@ -398,13 +398,11 @@ fn render_status_bar_shortcuts(f: &mut Frame, app: &mut AppState, area: Rect) {
     let bar_style = app.theme.text.add_modifier(Modifier::DIM);
 
     let shortcuts = Line::from(vec![
-        Span::styled("/ ", key_style),
-        Span::raw("filter  "),
         Span::styled("Ctrl+G ", key_style),
         Span::raw("versions  "),
         Span::styled("? ", key_style),
         Span::raw("help  "),
-        Span::styled("Esc ", key_style),
+        Span::styled("q ", key_style),
         Span::raw("quit"),
     ]);
 
@@ -419,8 +417,8 @@ fn render_status_bar_shortcuts(f: &mut Frame, app: &mut AppState, area: Rect) {
 fn render_status_bar_operational(f: &mut Frame, app: &mut AppState, area: Rect) {
     let bar_style = app.theme.text.add_modifier(Modifier::DIM);
     let mut spans = vec![Span::raw(format!(
-        "Items: {} | Index: {:.2}ms",
-        app.total_items, app.index_time_ms
+        "Objects: {}",
+        app.total_items
     ))];
     if !app.source_warnings.is_empty() {
         spans.push(Span::raw(" |"));
@@ -445,8 +443,8 @@ fn render_status_bar_operational(f: &mut Frame, app: &mut AppState, area: Rect) 
 fn render_status_bar_versions(f: &mut Frame, app: &mut AppState, area: Rect) {
     let bar_style = app.theme.text.add_modifier(Modifier::DIM);
     let versions = Line::from(format!(
-        "Game: {}  App: {}",
-        app.game_version, app.app_version
+        "Game: {}",
+        app.game_version
     ));
 
     f.render_widget(
