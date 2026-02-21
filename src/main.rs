@@ -807,8 +807,8 @@ fn handle_key_event(
         return;
     }
 
-    if code == KeyCode::Tab {
-        if modifiers.contains(KeyModifiers::SHIFT) {
+    if code == KeyCode::Tab || code == KeyCode::BackTab {
+        if code == KeyCode::BackTab || modifiers.contains(KeyModifiers::SHIFT) {
             app.focus_prev_pane();
         } else {
             app.focus_next_pane();
@@ -1800,6 +1800,9 @@ mod tests {
 
         handle_key_event(&mut app, KeyCode::Tab, KeyModifiers::SHIFT, KeyEventKind::Press);
         assert_eq!(app.focused_pane, FocusPane::Filter);
+
+        handle_key_event(&mut app, KeyCode::BackTab, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.focused_pane, FocusPane::Details);
     }
 
     #[test]
