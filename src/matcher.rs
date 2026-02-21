@@ -1,3 +1,4 @@
+use crate::model::IndexedItem;
 use serde_json::Value;
 
 /// Represents a parsed search term with an optional classifier and exact match flag.
@@ -246,7 +247,7 @@ fn matches_field_parts(json: &Value, parts: &[&str], pattern: &str, exact: bool)
 /// Returns indices of matching items
 pub fn find_matches(
     query: &str,
-    items: &[crate::data::IndexedItem],
+    items: &[IndexedItem],
     search_index: &crate::search_index::SearchIndex,
 ) -> Vec<usize> {
     use foldhash::HashSet;
@@ -332,7 +333,7 @@ pub fn find_matches(
 
 /// Slow path: recursive search with classifier for nested fields
 fn slow_search_classifier(
-    items: &[crate::data::IndexedItem],
+    items: &[IndexedItem],
     classifier: &str,
     pattern: &str,
     exact: bool,
@@ -358,7 +359,7 @@ fn slow_search_classifier(
 
 /// Slow path: recursive search without classifier
 fn slow_search_no_classifier(
-    items: &[crate::data::IndexedItem],
+    items: &[IndexedItem],
     pattern: &str,
     exact: bool,
 ) -> foldhash::HashSet<usize> {
@@ -378,7 +379,7 @@ fn slow_search_no_classifier(
         .collect()
 }
 
-fn collect_all_indices(items: &[crate::data::IndexedItem]) -> Vec<usize> {
+fn collect_all_indices(items: &[IndexedItem]) -> Vec<usize> {
     (0..items.len()).collect()
 }
 
@@ -563,7 +564,7 @@ mod tests {
 
     #[test]
     fn test_search_simple_pattern() {
-        let items = vec![crate::data::IndexedItem {
+        let items = vec![IndexedItem {
             value: json!({"id": "f_alien_gasper", "flags": ["TRANSPARENT", "EMITTER", "MINEABLE"]}),
             id: "f_alien_gasper".to_string(),
             item_type: "furniture".to_string(),
@@ -577,7 +578,7 @@ mod tests {
 
     #[test]
     fn test_search_exact_match() {
-        let items = vec![crate::data::IndexedItem {
+        let items = vec![IndexedItem {
             value: json!({"id": "f_alien_gasper", "flags": ["TRANSPARENT", "EMITTER", "MINEABLE"]}),
             id: "f_alien_gasper".to_string(),
             item_type: "furniture".to_string(),
@@ -596,7 +597,7 @@ mod tests {
 
     #[test]
     fn test_search_classifier_exact_with_spaces() {
-        let items = vec![crate::data::IndexedItem {
+        let items = vec![IndexedItem {
             value: json!({"snippet": "exact phrase match"}),
             id: "test".to_string(),
             item_type: "item".to_string(),
@@ -611,7 +612,7 @@ mod tests {
 
     #[test]
     fn test_search_classifier_exact_with_apostrophe() {
-        let items = vec![crate::data::IndexedItem {
+        let items = vec![IndexedItem {
             value: json!({"snippet": "You wouldn't buy a car"}),
             id: "test".to_string(),
             item_type: "item".to_string(),
@@ -626,7 +627,7 @@ mod tests {
 
     #[test]
     fn test_search_classifier_exact_with_escaped_apostrophe() {
-        let items = vec![crate::data::IndexedItem {
+        let items = vec![IndexedItem {
             value: json!({"snippet": "You wouldn't buy a car"}),
             id: "test".to_string(),
             item_type: "item".to_string(),
@@ -641,7 +642,7 @@ mod tests {
 
     #[test]
     fn test_search_classifier() {
-        let items = vec![crate::data::IndexedItem {
+        let items = vec![IndexedItem {
             value: json!({"id": "f_alien_gasper", "type": "furniture"}),
             id: "f_alien_gasper".to_string(),
             item_type: "furniture".to_string(),
@@ -659,7 +660,7 @@ mod tests {
 
     #[test]
     fn test_search_nested_field() {
-        let items = vec![crate::data::IndexedItem {
+        let items = vec![IndexedItem {
             value: json!({"bash": {"str_min": 30, "str_max": 60}}),
             id: "test".to_string(),
             item_type: "furniture".to_string(),
@@ -681,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_search_invalid_classifier() {
-        let items = vec![crate::data::IndexedItem {
+        let items = vec![IndexedItem {
             value: json!({"bash": {"str_min": 30}}),
             id: "test".to_string(),
             item_type: "furniture".to_string(),
@@ -696,7 +697,7 @@ mod tests {
 
     #[test]
     fn test_search_and_logic() {
-        let items = vec![crate::data::IndexedItem {
+        let items = vec![IndexedItem {
             value: json!({"id": "f_alien_gasper", "flags": ["EMITTER"]}),
             id: "f_alien_gasper".to_string(),
             item_type: "furniture".to_string(),
@@ -710,7 +711,7 @@ mod tests {
     /// Test all examples from the original user request
     #[test]
     fn test_all_user_examples() {
-        let items = vec![crate::data::IndexedItem {
+        let items = vec![IndexedItem {
             value: json!({
                 "type": "furniture",
                 "id": "f_alien_gasper",
@@ -818,7 +819,7 @@ mod tests {
     #[test]
     fn test_search_with_index_shortcuts() {
         // Tests for issue #2: shortcuts i:, t:, c: should work
-        let items = vec![crate::data::IndexedItem {
+        let items = vec![IndexedItem {
             value: json!({"id": "test_item", "type": "TOOL", "category": "weapons"}),
             id: "test_item".to_string(),
             item_type: "TOOL".to_string(),
@@ -840,7 +841,7 @@ mod tests {
     #[test]
     fn test_search_with_index_array_elements() {
         // Tests for issue #3: array elements should be indexed
-        let items = vec![crate::data::IndexedItem {
+        let items = vec![IndexedItem {
             value: json!({"id": "test", "flags": ["EMITTER", "DANGEROUS"]}),
             id: "test".to_string(),
             item_type: "item".to_string(),
@@ -863,7 +864,7 @@ mod tests {
     fn test_search_with_index_nested_fields() {
         // Tests for issue #4 & #5: nested fields should be searchable
         let items = vec![
-            crate::data::IndexedItem {
+            IndexedItem {
                 value: json!({
                     "id": "f_alien_gasper",
                     "bash": {
@@ -874,12 +875,12 @@ mod tests {
                 id: "f_alien_gasper".to_string(),
                 item_type: "furniture".to_string(),
             },
-            crate::data::IndexedItem {
+            IndexedItem {
                 value: json!({"id": "apple", "color": "red"}),
                 id: "apple".to_string(),
                 item_type: "fruit".to_string(),
             },
-            crate::data::IndexedItem {
+            IndexedItem {
                 value: json!({"id": "banana", "color": "yellow"}),
                 id: "banana".to_string(),
                 item_type: "fruit".to_string(),
@@ -914,7 +915,7 @@ mod tests {
             let id = format!("item_{}", i);
             let type_ = if i < 10 { "rare" } else { "common" };
             let cat = if i % 2 == 0 { "even" } else { "odd" };
-            items.push(crate::data::IndexedItem {
+            items.push(IndexedItem {
                 value: json!({"id": id, "type": type_, "category": cat}),
                 id,
                 item_type: type_.to_string(),
@@ -962,7 +963,7 @@ mod tests {
         // Generate 10,000 items with nested structure
         let mut items = Vec::new();
         for i in 0..10000 {
-            items.push(crate::data::IndexedItem {
+            items.push(IndexedItem {
                 value: json!({
                     "id": format!("item_{}", i),
                     "description": "This is a test description with some random words like zombie, alien, and robot.",

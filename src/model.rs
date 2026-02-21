@@ -1,14 +1,14 @@
-use anyhow::{Context, Result, bail};
+//! Shared data model types used by both native and web runtimes.
+
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 /// Core metadata for a game build, flattened from various JSON sources.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BuildInfo {
     /// The unique build identifier (e.g., "2024-01-01" or "v0.9.1").
     pub build_number: String,
-    /// The human-readable tag name.
+    /// The human-readable tag name (often matches build_number or is more descriptive).
     pub tag_name: String,
     /// Whether this is a prerelease/nightly build.
     pub prerelease: bool,
@@ -27,6 +27,27 @@ pub struct IndexedItem {
     pub item_type: String,
 }
 
+impl IndexedItem {
+    /// Constructs an `IndexedItem` from a raw JSON value, extracting `id` and `type`.
+    pub fn from_value(value: Value) -> Self {
+        let id = value
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let item_type = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        Self {
+            value,
+            id,
+            item_type,
+        }
+    }
+}
+
 /// The root structure of the game data JSON (`all.json`).
 #[derive(Debug, Deserialize)]
 pub struct Root {
@@ -38,6 +59,8 @@ pub struct Root {
 }
 
 impl<'de> Deserialize<'de> for BuildInfo {
+    /// Custom deserializer to flatten the potential nesting of `release.tag_name`
+    /// from Github-style JSON responses into a flat domain model.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -56,6 +79,7 @@ impl<'de> Deserialize<'de> for BuildInfo {
         let mut prerelease = proxy.prerelease.unwrap_or(false);
         let mut created_at = proxy.created_at.unwrap_or_default();
 
+        // Extract flattened fields from the optional nested `release` object
         if let Some(release) = proxy.release {
             if let Some(tag) = release.get("tag_name").and_then(|v| v.as_str()) {
                 tag_name = tag.to_string();
@@ -75,20 +99,4 @@ impl<'de> Deserialize<'de> for BuildInfo {
             created_at,
         })
     }
-}
-
-pub async fn fetch_game_root(version: &str) -> Result<Root> {
-    let url = format!(
-        "https://data.cataclysmbn-guide.com/data/{}/all.json",
-        version
-    );
-
-    let response = reqwest::get(&url).await?;
-    if !response.status().is_success() {
-        bail!("failed to download {}: HTTP {}", url, response.status());
-    }
-
-    let text = response.text().await?;
-    let root: Root = serde_json::from_str(&text).context("failed to parse all.json")?;
-    Ok(root)
 }

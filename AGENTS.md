@@ -5,6 +5,11 @@ Purpose
 - Real data for analysis is in `data/all.json`.
 - Schema reference lives in `reference/types.ts` (TypeScript typings).
 
+Runtime Priority
+- TUI/native comes first.
+- Web is a parity target and may lag behind native temporarily.
+- Concentrated development focus is on TUI; update web after native behavior is stable.
+
 Repository Layout
 - `Cargo.toml`: crate metadata and dependencies.
 - `src/main.rs`: application entry point, UI, state, and tests.
