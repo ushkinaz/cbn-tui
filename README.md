@@ -2,7 +2,7 @@
 
 Terminal User Interface (TUI) browser for **Cataclysm: Bright Nights** JSON data.
 
-![cbn-tui screenshot](./screenshot.png)
+<a href="https://asciinema.org/a/791876" target="_blank"><img src="https://asciinema.org/a/791876.svg" /></a>
 
 
 ## 👴 History
