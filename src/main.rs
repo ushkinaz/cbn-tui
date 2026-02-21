@@ -1009,19 +1009,16 @@ fn handle_key_event(
         },
     }
 }
-
-const ID_LIKE_FIELDS: &[&str] = &[
-    "copy-from",
-    "abstract",
+/// Fields that should never trigger any clickable navigation.
+const EXCLUDED_FIELDS: &[&str] = &[
     "id",
-    "result",
-    "using",
-    "from",
-    "to",
-    "extends",
-    "looks_like",
-    "repairs_like",
-    "weapon_category",
+    "abstract",
+    "description",
+    "name",
+    "__filename",
+    "//",
+    "//2",
+    "rows",
 ];
 
 const SCROLL_LINES: u16 = 1;
@@ -1057,11 +1054,7 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
     {
         let path_str = path.as_ref();
         let first_part = path_str.split('.').next().unwrap_or("");
-        if !matches!(
-            first_part,
-            "id" | "abstract" | "description" | "__filename" | "//" | "//2" | "rows" | "name"
-        ) && span.span_id.is_some()
-        {
+        if !EXCLUDED_FIELDS.contains(&first_part) && span.span_id.is_some() {
             is_valid_target = true;
             new_hover_id = span.span_id;
             target_path = path_str.to_string();
@@ -1177,15 +1170,14 @@ fn handle_mouse_event(app: &mut AppState, mouse: event::MouseEvent) -> bool {
             let escaped = unescaped_val.replace('\\', "\\\\").replace('\'', "\\'");
             let final_val = format!("'{}'", escaped);
 
-            let is_id_like = ID_LIKE_FIELDS.contains(&target_path.as_str())
-                || app.id_set.contains(&unescaped_val);
-
-            if is_id_like {
+            // ID navigation (i:<id>) triggered by Ctrl-Click
+            if mouse.modifiers.contains(KeyModifiers::CONTROL) {
                 app.filter_text = format!("i:{}", final_val);
                 app.filter_cursor = app.filter_text.chars().count();
                 app.update_filter();
                 app.focus_pane(FocusPane::Details);
             } else {
+                // Normal click: property-specific filtering
                 let filter_addition = format!("{}:{}", target_path, final_val);
                 let current = app.filter_text.trim();
                 if current.is_empty() {

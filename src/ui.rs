@@ -503,7 +503,8 @@ fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
         "Navigation",
         vec![
             ("/", "filter items"),
-            ("Tab | Shift+Tab", "next | prev pane focus"),
+            ("Mouse Click", "filter by property"),
+            ("Ctrl+Click", "jump to ID"),
             ("Ctrl+R", "reload local source"),
             ("Ctrl+G", "version switcher"),
             ("q", "quit"),
@@ -540,8 +541,8 @@ fn render_help_overlay(f: &mut Frame, app: &mut AppState) {
             ("zombie", "- generic search in all fields"),
             ("t:gun", "- filter by type (i:id, t:type, c:cat)"),
             ("bash.str_min:30", "- filter by nested field"),
-            ("'term'", "- exact match"),
-            ("term1 term2", "- AND logic"),
+            ("'shot'", "- exact match"),
+            ("zombie mom", "- AND logic"),
         ],
     ));
 
